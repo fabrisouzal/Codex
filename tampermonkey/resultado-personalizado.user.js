@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Resultado Personalizado
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-04.01
+// @version      2026-06-05.01
 // @description  Jornada "Resultado Personalizado": Grid em acordeon, filtros, seleção, copiar grid/tabela/célula/coluna/linha e exportar CSV/HTML/TXT/XLSX/JPG.
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -1075,6 +1075,9 @@
       var colSec = addContextSection(menu);
       addContextAction(colSec, "^", "Ordenar crescente", function () { sortTableByColumn(table, colIndex, "asc"); });
       addContextAction(colSec, "v", "Ordenar decrescente", function () { sortTableByColumn(table, colIndex, "desc"); });
+      addContextAction(colSec, "0", "Voltar ordem da consulta", function () {
+        showToast(clearColumnSort(table) ? "Ordem original restaurada" : "A consulta já está na ordem original");
+      });
       addContextAction(colSec, "R", "Renomear coluna", function () {
         selectedColIndex = colIndex;
         renameSelectedColumn(table);
@@ -1188,6 +1191,18 @@
     });
     var body = table.tBodies && table.tBodies[0] ? table.tBodies[0] : table;
     for (var i = 0; i < rows.length; i++) body.appendChild(rows[i].row);
+  }
+
+  function clearColumnSort(table) {
+    if (!table || !table.rows) return false;
+    var hadSort = !!(table.dataset.tmSortCol || table.dataset.tmSortDir);
+    restoreOriginalRowOrder(table);
+    delete table.dataset.tmSortCol;
+    delete table.dataset.tmSortDir;
+    applyPinnedRows(table);
+    renderHeaderSortControls(table);
+    refreshSummaryPanel();
+    return hadSort;
   }
 
   function compareGridValues(a, b) {
