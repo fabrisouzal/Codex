@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         Editor de Query
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-04.01
+// @version      2026-06-05.02
 // @description  Editor SQL Pro. Accordion para ocultar/mostrar query + Export .sql + temas + painel de configurações.
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
+// @match        http://10.200.35.7/*
+// @match        https://10.200.35.7/*
 // @require      https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/codemirror.min.js
 // @require      https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/mode/sql/sql.min.js
 // @require      https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/edit/closebrackets.min.js

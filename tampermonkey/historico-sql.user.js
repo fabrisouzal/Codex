@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         Histórico SQL
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-05.01
+// @version      2026-06-05.02
 // @description  Histórico de queries com favoritos, etiquetas, comentários, export/import e painel de configurações
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
+// @match        http://10.200.35.7/*
+// @match        https://10.200.35.7/*
 // @updateURL    https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/historico-sql.user.js
 // @downloadURL  https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/historico-sql.user.js
 // @grant        none
