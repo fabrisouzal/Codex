@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Histórico SQL
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-04.01
+// @version      2026-06-05.01
 // @description  Histórico de queries com favoritos, etiquetas, comentários, export/import e painel de configurações
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -46,7 +46,7 @@
             ignoreConsecutiveDuplicates: true
         },
         history: {
-            maxItems: 10000,
+            maxItems: 99999999,
             recentSearchesMax: 8,
             commentMaxLength: 600
         },
@@ -243,7 +243,7 @@
         merged.capture.captureOnCtrlEnter = merged.capture.captureOnCtrlEnter !== false;
         merged.capture.ignoreConsecutiveDuplicates = merged.capture.ignoreConsecutiveDuplicates !== false;
 
-        merged.history.maxItems = clamp(Number(merged.history.maxItems) || DEFAULT_SETTINGS.history.maxItems, 100, 10000);
+        merged.history.maxItems = clamp(Number(merged.history.maxItems) || DEFAULT_SETTINGS.history.maxItems, 100, 99999999);
         merged.history.recentSearchesMax = clamp(Number(merged.history.recentSearchesMax) || DEFAULT_SETTINGS.history.recentSearchesMax, 3, 20);
         merged.history.commentMaxLength = clamp(Number(merged.history.commentMaxLength) || DEFAULT_SETTINGS.history.commentMaxLength, 100, 2000);
 
@@ -3023,7 +3023,7 @@
         const maxItems = document.createElement('input');
         maxItems.type = 'number';
         maxItems.min = '100';
-        maxItems.max = '10000';
+        maxItems.max = '99999999';
         maxItems.step = '100';
         maxItems.setAttribute('data-setting', 'history.maxItems');
 
@@ -3210,7 +3210,7 @@
                     ignoreConsecutiveDuplicates: !!ignoreDupes.checked
                 },
                 history: {
-                    maxItems: clamp(Number(maxItems.value) || DEFAULT_SETTINGS.history.maxItems, 100, 10000),
+                    maxItems: clamp(Number(maxItems.value) || DEFAULT_SETTINGS.history.maxItems, 100, 99999999),
                     recentSearchesMax: clamp(Number(recentSearchesMax.value) || DEFAULT_SETTINGS.history.recentSearchesMax, 3, 20),
                     commentMaxLength: clamp(Number(commentMaxLength.value) || DEFAULT_SETTINGS.history.commentMaxLength, 100, 2000)
                 },
