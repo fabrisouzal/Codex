@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Exportar Transcrição Teams SharePoint
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-08.01
+// @version      2026-06-08.02
 // @description  Rola o painel de transcrição visível, captura os textos e baixa arquivo TXT/JSON
 // @match        *://*.sharepoint.com/*
 // @match        *://*.microsoftstream.com/*
@@ -199,8 +199,9 @@
 
         elementos.forEach(el => {
             const texto = limparTexto(el.innerText || el.textContent || "");
+            const blocoNormalizado = normalizarBlocoTranscricao(texto);
 
-            if (!texto || texto.length < 8) return;
+            if (!blocoNormalizado || blocoNormalizado.length < 8) return;
             if (texto.length > 1800) return;
             if (deveIgnorarTexto(texto)) return;
             if (temFilhoComMesmoTexto(el, texto)) return;
@@ -209,7 +210,7 @@
             const pontuacao = pontuarBlocoDeTranscricao(texto, el);
             if (pontuacao < 3) return;
 
-            candidatos.push({ texto, pontuacao });
+            candidatos.push({ texto: blocoNormalizado, pontuacao });
         });
 
         return candidatos
@@ -228,6 +229,119 @@
         if (/\b([A-ZÁÉÍÓÚÂÊÔÃÕÇ][\wÁÉÍÓÚÂÊÔÃÕÇáéíóúâêôãõç.-]+)\b/.test(texto)) pontuacao += 1;
 
         return pontuacao;
+    }
+
+    function normalizarBlocoTranscricao(textoOriginal) {
+        if (!textoOriginal) return "";
+
+        const linhasOriginais = limparTexto(textoOriginal)
+            .split("\n")
+            .map(limparLinha)
+            .filter(Boolean);
+
+        if (!linhasOriginais.length) return "";
+
+        const linhas = removerDuplicadasConsecutivas(linhasOriginais);
+        let horario = "";
+        let falante = "";
+        const fala = [];
+
+        linhas.forEach((linha, indice) => {
+            if (deveIgnorarLinhaNormalizada(linha)) return;
+
+            if (temMarcadorDeTempo(linha) && linha.length <= 8) {
+                horario ||= linha;
+                return;
+            }
+
+            if (/^\d+\s+\d+$/.test(linha)) return;
+
+            const metadados = extrairMetadadosDeLinha(linha);
+            if (metadados) {
+                horario ||= metadados.horario;
+                falante ||= metadados.falante;
+                return;
+            }
+
+            if (!falante && pareceNomeFalante(linha) && indice <= 2) {
+                falante = linha;
+                return;
+            }
+
+            fala.push(linha);
+        });
+
+        const textoFala = removerDuplicadasConsecutivas(fala)
+            .filter(linha => !deveIgnorarLinhaNormalizada(linha))
+            .join(" ")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        if (!horario || !textoFala) return "";
+        if (textoFala.length < 3) return "";
+
+        const cabecalho = falante ? `${horario} - ${falante}` : horario;
+        return `${cabecalho}\n${textoFala}`;
+    }
+
+    function limparLinha(linha) {
+        return limparTexto(linha)
+            .replace(/[\ue000-\uf8ff]/g, "")
+            .trim();
+    }
+
+    function removerDuplicadasConsecutivas(linhas) {
+        return linhas.filter((linha, indice) => indice === 0 || linha !== linhas[indice - 1]);
+    }
+
+    function deveIgnorarLinhaNormalizada(linha) {
+        if (!linha) return true;
+
+        const ignorarExato = [
+            "O conteúdo gerado por IA pode estar incorreto",
+            "começou a transcrição"
+        ];
+
+        return ignorarExato.includes(linha) || deveIgnorarTexto(linha);
+    }
+
+    function extrairMetadadosDeLinha(linha) {
+        const match = linha.match(/^(.+?)\s+((?:\d+\s+hora[s]?\s*)?(?:\d+\s+minuto[s]?\s*)?\d+\s+segundo[s]?)$/i);
+        if (!match) return null;
+
+        return {
+            falante: normalizarFalante(match[1].trim()),
+            horario: converterTempoFalado(match[2])
+        };
+    }
+
+    function normalizarFalante(valor) {
+        if (/^@\d+$/.test(valor)) {
+            return `Falante ${valor.slice(1)}`;
+        }
+
+        return valor;
+    }
+
+    function converterTempoFalado(texto) {
+        const horas = extrairNumeroTempo(texto, "hora");
+        const minutos = extrairNumeroTempo(texto, "minuto");
+        const segundos = extrairNumeroTempo(texto, "segundo");
+
+        if (horas > 0) {
+            return `${horas}:${String(minutos).padStart(2, "0")}:${String(segundos).padStart(2, "0")}`;
+        }
+
+        return `${minutos}:${String(segundos).padStart(2, "0")}`;
+    }
+
+    function extrairNumeroTempo(texto, unidade) {
+        const match = texto.match(new RegExp(`(\\d+)\\s+${unidade}s?`, "i"));
+        return match ? Number(match[1]) : 0;
+    }
+
+    function pareceNomeFalante(linha) {
+        return /^(Falante \d+|[A-ZÁÉÍÓÚÂÊÔÃÕÇ][\wÁÉÍÓÚÂÊÔÃÕÇáéíóúâêôãõç.-]+(?:\s+[A-ZÁÉÍÓÚÂÊÔÃÕÇ][\wÁÉÍÓÚÂÊÔÃÕÇáéíóúâêôãõç.-]+){0,3})$/.test(linha);
     }
 
     function temFilhoComMesmoTexto(el, texto) {
