@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Exportar Transcrição Teams SharePoint
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-04.01
+// @version      2026-06-08.01
 // @description  Rola o painel de transcrição visível, captura os textos e baixa arquivo TXT/JSON
 // @match        *://*.sharepoint.com/*
 // @match        *://*.microsoftstream.com/*
@@ -17,9 +17,10 @@
     const CONFIG = {
         intervaloRolagemMs: 900,
         pixelsPorRolagem: 420,
-        nomeArquivoTxt: "transcricao_reuniao.txt",
-        nomeArquivoJson: "transcricao_reuniao.json",
-        modoDebug: true
+        maxCiclosRolagem: 220,
+        ciclosSemNovosBlocosParaParar: 8,
+        nomeBaseArquivo: "transcricao_reuniao",
+        modoDebug: false
     };
 
     let capturando = false;
@@ -31,6 +32,8 @@
         const botao = document.createElement("button");
         botao.id = "btnExportarTranscricaoTM";
         botao.innerText = "Exportar transcrição";
+        botao.type = "button";
+        botao.title = "Exportar transcrição visível para TXT e JSON";
 
         Object.assign(botao.style, {
             position: "fixed",
@@ -38,6 +41,7 @@
             right: "20px",
             zIndex: "999999",
             padding: "10px 14px",
+            minWidth: "162px",
             background: "#6d28d9",
             color: "#fff",
             border: "none",
@@ -81,10 +85,13 @@
 
         const contemTitulo =
             textoLimpo.includes("Transcrição") ||
+            textoLimpo.includes("Transcript") ||
             textoLimpo.includes("Pesquisar") ||
+            textoLimpo.includes("Search") ||
+            textoLimpo.includes("Download") ||
             textoLimpo.includes("Baixar");
 
-        const contemTempo = /\b\d{1,2}:\d{2}\b/.test(textoLimpo);
+        const contemTempo = temMarcadorDeTempo(textoLimpo);
 
         const contemFalaComum =
             textoLimpo.includes("Mm-hmm") ||
@@ -110,8 +117,11 @@
 
                 if (pareceTranscricao(texto)) pontuacao += 10;
                 if (texto.includes("Transcrição")) pontuacao += 20;
+                if (texto.includes("Transcript")) pontuacao += 20;
                 if (texto.includes("Pesquisar")) pontuacao += 10;
-                if (/\b\d{1,2}:\d{2}\b/.test(texto)) pontuacao += 20;
+                if (texto.includes("Search")) pontuacao += 10;
+                if (temMarcadorDeTempo(texto)) pontuacao += 20;
+                if (texto.length > 300) pontuacao += 5;
 
                 /*
                 Dá preferência para painéis laterais,
@@ -160,36 +170,95 @@
     }
 
     function capturarTextos(container) {
-        const elementos = Array.from(container.querySelectorAll("div, span, p"));
+        let novosBlocos = 0;
+        const blocos = extrairBlocosProvaveis(container);
+
+        blocos.forEach(texto => {
+            if (blocosCapturados.has(texto)) return;
+            blocosCapturados.set(texto, texto);
+            novosBlocos++;
+        });
+
+        return novosBlocos;
+    }
+
+    function extrairBlocosProvaveis(container) {
+        const seletores = [
+            "[role='listitem']",
+            "[data-tid*='message' i]",
+            "[data-tid*='transcript' i]",
+            "[data-testid*='message' i]",
+            "[data-testid*='transcript' i]",
+            "li",
+            "p",
+            "div"
+        ];
+
+        const elementos = Array.from(container.querySelectorAll(seletores.join(",")));
+        const candidatos = [];
 
         elementos.forEach(el => {
             const texto = limparTexto(el.innerText || el.textContent || "");
 
-            if (!texto) return;
-            if (texto.length < 3) return;
-
+            if (!texto || texto.length < 8) return;
+            if (texto.length > 1800) return;
             if (deveIgnorarTexto(texto)) return;
+            if (temFilhoComMesmoTexto(el, texto)) return;
+            if (pareceContainerAgregador(el, texto)) return;
 
-            /*
-            Captura preferencialmente blocos que pareçam mensagem:
-            - têm horário
-            - têm fala
-            - têm nome + fala no mesmo bloco
-            */
-            const temHorario = /\b\d{1,2}:\d{2}\b/.test(texto);
-            const temTextoDeFala = texto.length >= 8;
+            const pontuacao = pontuarBlocoDeTranscricao(texto, el);
+            if (pontuacao < 3) return;
 
-            if (!temHorario && !temTextoDeFala) return;
-
-            blocosCapturados.set(texto, texto);
+            candidatos.push({ texto, pontuacao });
         });
+
+        return candidatos
+            .map(item => item.texto);
+    }
+
+    function pontuarBlocoDeTranscricao(texto, el) {
+        let pontuacao = 0;
+        const rect = el.getBoundingClientRect();
+
+        if (temMarcadorDeTempo(texto)) pontuacao += 4;
+        if (texto.includes("\n")) pontuacao += 2;
+        if (texto.length >= 20) pontuacao += 2;
+        if (texto.length >= 80) pontuacao += 1;
+        if (rect.height >= 16 && rect.width >= 80) pontuacao += 1;
+        if (/\b([A-ZÁÉÍÓÚÂÊÔÃÕÇ][\wÁÉÍÓÚÂÊÔÃÕÇáéíóúâêôãõç.-]+)\b/.test(texto)) pontuacao += 1;
+
+        return pontuacao;
+    }
+
+    function temFilhoComMesmoTexto(el, texto) {
+        return Array.from(el.children).some(filho => {
+            const textoFilho = limparTexto(filho.innerText || filho.textContent || "");
+            return textoFilho && textoFilho === texto;
+        });
+    }
+
+    function pareceContainerAgregador(el, texto) {
+        if (texto.length < 350) return false;
+
+        const descendentesComTexto = Array.from(el.querySelectorAll("div, p, span, li"))
+            .map(filho => limparTexto(filho.innerText || filho.textContent || ""))
+            .filter(textoFilho => textoFilho.length >= 8 && textoFilho.length < texto.length);
+
+        return descendentesComTexto.length >= 4;
+    }
+
+    function temMarcadorDeTempo(texto) {
+        return /\b\d{1,2}:\d{2}(?::\d{2})?\b/.test(texto);
     }
 
     function deveIgnorarTexto(texto) {
         const ignorarExato = [
             "Transcrição",
+            "Transcript",
             "Pesquisar",
+            "Search",
             "Baixar",
+            "Download",
             "Observações",
             "Comentários",
             "Análise",
@@ -201,6 +270,7 @@
         const ignorarContendo = [
             "Exportar transcrição",
             "Capturando",
+            "Concluído",
             "Sincronizar",
             "projedata-my.sharepoint.com diz",
             "Não encontrei o painel"
@@ -234,48 +304,58 @@
             return;
         }
 
-        const containerLeitura = encontrarContainerDeLeitura(areaRolavel);
-
         capturando = true;
         blocosCapturados.clear();
 
         const botao = document.getElementById("btnExportarTranscricaoTM");
         botao.innerText = "Capturando...";
+        botao.disabled = true;
+        botao.style.opacity = "0.8";
 
-        areaRolavel.scrollTop = 0;
-        await esperar(1200);
+        try {
+            areaRolavel.scrollTop = 0;
+            await esperar(1200);
 
-        let posicaoAnterior = -1;
-        let tentativasSemMover = 0;
+            let posicaoAnterior = -1;
+            let tentativasSemMover = 0;
+            let ciclosSemNovosBlocos = 0;
 
-        while (capturando) {
-            capturarTextos(containerLeitura);
+            for (let ciclo = 0; capturando && ciclo < CONFIG.maxCiclosRolagem; ciclo++) {
+                const containerLeitura = encontrarContainerDeLeitura(areaRolavel);
+                const novosBlocos = capturarTextos(containerLeitura);
+                botao.innerText = `Capturando... ${blocosCapturados.size}`;
 
-            areaRolavel.scrollTop += CONFIG.pixelsPorRolagem;
+                ciclosSemNovosBlocos = novosBlocos ? 0 : ciclosSemNovosBlocos + 1;
+                areaRolavel.scrollTop += CONFIG.pixelsPorRolagem;
 
-            await esperar(CONFIG.intervaloRolagemMs);
+                await esperar(CONFIG.intervaloRolagemMs);
 
-            const posicaoAtual = areaRolavel.scrollTop;
+                const posicaoAtual = areaRolavel.scrollTop;
 
-            if (posicaoAtual === posicaoAnterior) {
-                tentativasSemMover++;
-            } else {
-                tentativasSemMover = 0;
+                if (posicaoAtual === posicaoAnterior) {
+                    tentativasSemMover++;
+                } else {
+                    tentativasSemMover = 0;
+                }
+
+                posicaoAnterior = posicaoAtual;
+
+                if (tentativasSemMover >= 4 && ciclosSemNovosBlocos >= CONFIG.ciclosSemNovosBlocosParaParar) {
+                    break;
+                }
             }
 
-            posicaoAnterior = posicaoAtual;
-
-            if (tentativasSemMover >= 4) {
-                break;
-            }
+            capturarTextos(encontrarContainerDeLeitura(areaRolavel));
+            gerarArquivos();
+        } catch (erro) {
+            console.error("[Transcrição TM] Falha ao capturar transcrição:", erro);
+            alert("Falha ao capturar a transcrição. Veja o Console do navegador para detalhes.");
+        } finally {
+            botao.innerText = "Exportar transcrição";
+            botao.disabled = false;
+            botao.style.opacity = "1";
+            capturando = false;
         }
-
-        capturarTextos(containerLeitura);
-
-        botao.innerText = "Exportar transcrição";
-        capturando = false;
-
-        gerarArquivos();
     }
 
     function esperar(ms) {
@@ -294,7 +374,7 @@
 
         const textoFinal = mensagens.join("\n\n");
 
-        baixarArquivo(CONFIG.nomeArquivoTxt, textoFinal, "text/plain;charset=utf-8");
+        baixarArquivo(criarNomeArquivo("txt"), textoFinal, "text/plain;charset=utf-8");
 
         const jsonFinal = JSON.stringify(
             {
@@ -307,7 +387,7 @@
             2
         );
 
-        baixarArquivo(CONFIG.nomeArquivoJson, jsonFinal, "application/json;charset=utf-8");
+        baixarArquivo(criarNomeArquivo("json"), jsonFinal, "application/json;charset=utf-8");
 
         alert(`Captura concluída. Blocos capturados: ${mensagens.length}`);
     }
@@ -321,7 +401,14 @@
             .map(limparTexto)
             .filter(Boolean)
             .filter(texto => texto.length < 1200)
-            .filter(texto => !deveIgnorarTexto(texto));
+            .filter(texto => !deveIgnorarTexto(texto))
+            .filter((texto, indice, lista) => {
+                return !lista.some((outro, outroIndice) => {
+                    if (indice === outroIndice) return false;
+                    if (outro.length <= texto.length + 40) return false;
+                    return outro.includes(texto);
+                });
+            });
     }
 
     function baixarArquivo(nomeArquivo, conteudo, tipo) {
@@ -339,15 +426,37 @@
         URL.revokeObjectURL(url);
     }
 
-    const observer = new MutationObserver(() => {
+    function criarNomeArquivo(extensao) {
+        const agora = new Date();
+        const carimbo = [
+            agora.getFullYear(),
+            String(agora.getMonth() + 1).padStart(2, "0"),
+            String(agora.getDate()).padStart(2, "0"),
+            String(agora.getHours()).padStart(2, "0"),
+            String(agora.getMinutes()).padStart(2, "0")
+        ].join("-");
+
+        return `${CONFIG.nomeBaseArquivo}_${carimbo}.${extensao}`;
+    }
+
+    function iniciar() {
+        if (!document.body) {
+            window.setTimeout(iniciar, 500);
+            return;
+        }
+
+        const observer = new MutationObserver(() => {
+            criarBotaoExportar();
+        });
+
+        observer.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+
         criarBotaoExportar();
-    });
+    }
 
-    observer.observe(document.body, {
-        childList: true,
-        subtree: true
-    });
-
-    criarBotaoExportar();
+    iniciar();
 
 })();
