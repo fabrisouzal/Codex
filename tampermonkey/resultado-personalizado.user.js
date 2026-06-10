@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Resultado Personalizado
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-05.02
+// @version      2026-06-10.01
 // @description  Jornada "Resultado Personalizado": Grid em acordeon, filtros, seleção, copiar grid/tabela/célula/coluna/linha e exportar CSV/HTML/TXT/XLSX/JPG.
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -502,8 +502,10 @@
       + ".tm-accordion,.tm-accordion *{font-family:" + UI_FONT_FAMILY + ";font-size:" + UI_FONT_SIZE_PX + "px;box-sizing:border-box;}\n"
       + ".tm-accordion{border:1px solid #cfdbe8;border-radius:8px;overflow:hidden;background:#fff;margin:6px 0 10px 0;box-shadow:0 1px 2px rgba(32,56,95,.08);}\n"
       + ".tm-acc-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:5px 10px;background:linear-gradient(#f7fbff,#eef4fb);cursor:pointer;user-select:none;color:#20385f;}\n"
-      + ".tm-acc-title{display:flex;align-items:center;gap:8px;font-weight:700;color:#20385f;min-width:200px;}\n"
-      + ".tm-acc-chevron{font-size:12px !important;line-height:16px;opacity:.8;transition:transform .15s ease;}\n"
+      + ".tm-acc-title{display:flex;align-items:center;gap:8px;font-weight:700;color:#20385f;min-width:240px;}\n"
+      + ".tm-acc-chevron{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;font-size:20px !important;line-height:22px;opacity:.9;transition:transform .15s ease;color:#185abd;}\n"
+      + ".tm-acc-status{display:inline-flex;align-items:center;padding:2px 7px;border:1px solid #b7c5d8;border-radius:999px;background:#fff;font-size:11px !important;font-weight:700;color:#40506a;}\n"
+      + ".tm-acc-status.tm-hidden{color:#6b3d00;border-color:#d99a31;background:#fff7e6;}\n"
       + ".tm-acc-actions{display:flex;align-items:center;gap:6px;}\n"
       + ".tm-acc-actions button{font-size:12px;padding:3px 8px;border-radius:6px;border:1px solid #b7c5d8;background:linear-gradient(#fff,#f7fbff);color:#20385f;cursor:pointer;}\n"
       + ".tm-acc-actions button:hover{background:linear-gradient(#ffffff,#eaf3ff);border-color:#8fb0d8;}\n"
@@ -673,9 +675,12 @@
 
     var titleText = document.createElement("span");
     titleText.textContent = "Resultado";
+    var statusText = document.createElement("span");
+    statusText.className = "tm-acc-status";
 
     title.appendChild(chev);
     title.appendChild(titleText);
+    title.appendChild(statusText);
     accHeaderEl.appendChild(title);
 
     var actions = document.createElement("div");
@@ -734,6 +739,8 @@
       var open = getAccOpenDefault();
       accBodyEl.classList.toggle("tm-collapsed", !open);
       chev.textContent = open ? "▾" : "▸";
+      statusText.textContent = open ? "Expandido" : "Oculto";
+      statusText.classList.toggle("tm-hidden", !open);
     }
 
     accordionEl.__tmApplyAccordionState = applyAccordionState;
@@ -2001,7 +2008,7 @@
 
     var html = [];
     html.push("<div class='tm-insight-head'>");
-    html.push("<div><div class='tm-insight-title'>Jornada de insights do resultado</div><div class='tm-insight-sub'>Resumo vivo das linhas visiveis, filtros e coluna selecionada</div></div>");
+    html.push("<div><div class='tm-insight-title'>Insights do resultado</div><div class='tm-insight-sub'>Resumo vivo das linhas visiveis, filtros e coluna selecionada</div></div>");
     html.push("<div class='tm-insight-actions'><button type='button' data-tm-insight-copy>Copiar resumo</button><button type='button' data-tm-insight-refresh>Atualizar</button></div>");
     html.push("</div>");
 
