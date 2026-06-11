@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Resultado Personalizado
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-10.01
+// @version      2026-06-11.01
 // @description  Jornada "Resultado Personalizado": Grid em acordeon, filtros, seleção, copiar grid/tabela/célula/coluna/linha e exportar CSV/HTML/TXT/XLSX/JPG.
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
