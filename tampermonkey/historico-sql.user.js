@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Histórico SQL
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-05.02
+// @version      2026-06-11.01
 // @description  Histórico de queries com favoritos, etiquetas, comentários, export/import e painel de configurações
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx

@@ -13,3 +13,7 @@ Instale cada script pelo link abaixo. Depois da primeira instalação, o Tamperm
 | Resultado Personalizado | https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/resultado-personalizado.user.js |
 | ATTUS - Definir Tennant PGESP | https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/definir-tennant-pgesp.user.js |
 | Exportar Transcrição Teams SharePoint | https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/exportar-transcricao-teams-sharepoint.user.js |
+
+### Documentacao
+
+- [PRD - Historico SQL](tampermonkey/historico-sql.prd.md)
