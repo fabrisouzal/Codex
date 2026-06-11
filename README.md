@@ -16,4 +16,6 @@ Instale cada script pelo link abaixo. Depois da primeira instalação, o Tamperm
 
 ### Documentacao
 
+- [PRD - Editor de Query](tampermonkey/editor-de-query-prd.md)
 - [PRD - Historico SQL](tampermonkey/historico-sql.prd.md)
+- [PRD - Resultado Personalizado](tampermonkey/resultado-personalizado-prd.md)
