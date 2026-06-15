@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Histórico SQL
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-11.01
+// @version      2026-06-15.01
 // @description  Histórico de queries com favoritos, etiquetas, comentários, export/import e painel de configurações
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -9,6 +9,7 @@
 // @match        https://10.200.35.7/*
 // @updateURL    https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/historico-sql.user.js
 // @downloadURL  https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/historico-sql.user.js
+// @require      https://accounts.google.com/gsi/client
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
@@ -34,6 +35,8 @@
     const RECENT_SEARCHES_KEY = 'sql_helper_recent_searches_v1';
     const SETTINGS_SCHEMA_VERSION = 1;
     const HISTORY_RENDER_LIMIT = 250;
+    const DRIVE_BACKUP_FILENAME = 'historico-sql-backup.json';
+    const DRIVE_APPDATA_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
 
     /********************************************************************
      * DEFAULTS
@@ -58,6 +61,12 @@
             cardsExpandedByDefault: false,
             showRunCount: true,
             showIcons: true
+        },
+        cloud: {
+            googleClientId: '',
+            lastBackupAt: '',
+            lastRestoreAt: '',
+            lastDriveFileId: ''
         }
     };
 
@@ -98,6 +107,7 @@
         exportImportFileInput: null,
         importModeMergeRadio: null,
         importModeReplaceRadio: null,
+        cloudStatusEl: null,
 
         settingsOverlay: null,
         tagsOverlay: null,
@@ -107,6 +117,9 @@
         mutationObserver: null,
         hookRunButtonTimer: null
     };
+
+    let googleDriveTokenClient = null;
+    let googleDriveAccessToken = '';
 
     const StorageService = {
         getJson(key, fallback) {
@@ -256,6 +269,11 @@
         merged.interface.cardsExpandedByDefault = !!merged.interface.cardsExpandedByDefault;
         merged.interface.showRunCount = merged.interface.showRunCount !== false;
         merged.interface.showIcons = merged.interface.showIcons !== false;
+
+        merged.cloud.googleClientId = String(merged.cloud.googleClientId || '').trim();
+        merged.cloud.lastBackupAt = String(merged.cloud.lastBackupAt || '');
+        merged.cloud.lastRestoreAt = String(merged.cloud.lastRestoreAt || '');
+        merged.cloud.lastDriveFileId = String(merged.cloud.lastDriveFileId || '');
 
         merged.schemaVersion = SETTINGS_SCHEMA_VERSION;
 
@@ -1034,6 +1052,259 @@
         }
 
         applyImportedItems(rows, mode);
+    }
+
+    /********************************************************************
+     * BACKUP GOOGLE DRIVE
+     ********************************************************************/
+
+    function setCloudStatus(message) {
+        if (state.cloudStatusEl) state.cloudStatusEl.textContent = message;
+    }
+
+    function getGoogleClientId() {
+        return String(getSettings().cloud.googleClientId || '').trim();
+    }
+
+    function buildCloudBackupPayload() {
+        return {
+            app: 'Historico SQL',
+            schemaVersion: 1,
+            exportedAt: new Date().toISOString(),
+            source: {
+                host: location.host,
+                pathname: location.pathname
+            },
+            settings: getSettings(),
+            history: loadHistory()
+        };
+    }
+
+    function extractHistoryFromCloudPayload(payload) {
+        if (Array.isArray(payload)) return payload;
+        if (payload && Array.isArray(payload.history)) return payload.history;
+        return null;
+    }
+
+    function ensureGoogleIdentityClient() {
+        return new Promise((resolve, reject) => {
+            const startedAt = Date.now();
+
+            (function waitForGoogle() {
+                if (window.google?.accounts?.oauth2) return resolve(window.google.accounts.oauth2);
+                if (Date.now() - startedAt > 8000) {
+                    return reject(new Error('Biblioteca Google Identity Services não carregou.'));
+                }
+                setTimeout(waitForGoogle, 100);
+            })();
+        });
+    }
+
+    async function requestGoogleDriveToken(forceConsent) {
+        const clientId = getGoogleClientId();
+        if (!clientId) {
+            alert('Informe o OAuth Client ID do Google nas Configurações antes de usar backup em nuvem.');
+            openSettingsModal();
+            throw new Error('OAuth Client ID não configurado.');
+        }
+
+        const oauth2 = await ensureGoogleIdentityClient();
+
+        return new Promise((resolve, reject) => {
+            googleDriveTokenClient = oauth2.initTokenClient({
+                client_id: clientId,
+                scope: DRIVE_APPDATA_SCOPE,
+                callback: response => {
+                    if (response?.error) {
+                        reject(new Error(response.error_description || response.error));
+                        return;
+                    }
+                    googleDriveAccessToken = response?.access_token || '';
+                    if (!googleDriveAccessToken) {
+                        reject(new Error('Token Google não retornado.'));
+                        return;
+                    }
+                    resolve(googleDriveAccessToken);
+                }
+            });
+
+            googleDriveTokenClient.requestAccessToken({ prompt: forceConsent ? 'consent' : '' });
+        });
+    }
+
+    async function getGoogleDriveToken(forceConsent) {
+        if (googleDriveAccessToken && !forceConsent) return googleDriveAccessToken;
+        return requestGoogleDriveToken(forceConsent);
+    }
+
+    async function driveFetch(url, options = {}, retryOnAuth = true) {
+        const token = await getGoogleDriveToken(false);
+        const response = await fetch(url, {
+            ...options,
+            headers: {
+                ...(options.headers || {}),
+                Authorization: `Bearer ${token}`
+            }
+        });
+
+        if ((response.status === 401 || response.status === 403) && retryOnAuth) {
+            googleDriveAccessToken = '';
+            const retryToken = await getGoogleDriveToken(true);
+            return fetch(url, {
+                ...options,
+                headers: {
+                    ...(options.headers || {}),
+                    Authorization: `Bearer ${retryToken}`
+                }
+            });
+        }
+
+        return response;
+    }
+
+    async function findDriveBackupFile() {
+        const query = encodeURIComponent(`name='${DRIVE_BACKUP_FILENAME}' and trashed=false`);
+        const fields = encodeURIComponent('files(id,name,modifiedTime,size)');
+        const url = `https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=${query}&fields=${fields}`;
+        const response = await driveFetch(url);
+        if (!response.ok) throw new Error(`Erro ao localizar backup no Drive (${response.status}).`);
+        const data = await response.json();
+        return (data.files || [])[0] || null;
+    }
+
+    async function createDriveBackupFile(payloadText) {
+        const boundary = 'sql_helper_drive_' + Date.now().toString(36);
+        const metadata = {
+            name: DRIVE_BACKUP_FILENAME,
+            mimeType: 'application/json',
+            parents: ['appDataFolder']
+        };
+
+        const body = [
+            `--${boundary}`,
+            'Content-Type: application/json; charset=UTF-8',
+            '',
+            JSON.stringify(metadata),
+            `--${boundary}`,
+            'Content-Type: application/json; charset=UTF-8',
+            '',
+            payloadText,
+            `--${boundary}--`
+        ].join('\r\n');
+
+        const response = await driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,modifiedTime', {
+            method: 'POST',
+            headers: {
+                'Content-Type': `multipart/related; boundary=${boundary}`
+            },
+            body
+        });
+
+        if (!response.ok) throw new Error(`Erro ao criar backup no Drive (${response.status}).`);
+        return response.json();
+    }
+
+    async function updateDriveBackupFile(fileId, payloadText) {
+        const response = await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}?uploadType=media&fields=id,name,modifiedTime`, {
+            method: 'PATCH',
+            headers: {
+                'Content-Type': 'application/json; charset=UTF-8'
+            },
+            body: payloadText
+        });
+
+        if (!response.ok) throw new Error(`Erro ao atualizar backup no Drive (${response.status}).`);
+        return response.json();
+    }
+
+    async function backupHistoryToGoogleDrive() {
+        try {
+            setCloudStatus('Conectando ao Google...');
+            await getGoogleDriveToken(false);
+
+            const payloadText = JSON.stringify(buildCloudBackupPayload(), null, 2);
+            setCloudStatus('Procurando backup existente...');
+            const existing = await findDriveBackupFile();
+
+            setCloudStatus(existing ? 'Atualizando backup no Google Drive...' : 'Criando backup no Google Drive...');
+            const file = existing
+                ? await updateDriveBackupFile(existing.id, payloadText)
+                : await createDriveBackupFile(payloadText);
+
+            const settings = getSettings();
+            const next = deepMerge(settings, {
+                cloud: {
+                    lastBackupAt: new Date().toISOString(),
+                    lastDriveFileId: file.id || existing?.id || ''
+                }
+            });
+            saveSettings(next);
+            setCloudStatus(`Backup concluído em ${formatDate(next.cloud.lastBackupAt)}.`);
+            alert('Backup enviado para o Google Drive.');
+        } catch (e) {
+            console.error('[SQL Helper] Falha no backup Google Drive:', e);
+            setCloudStatus('Falha no backup. Veja o console para detalhes.');
+            alert(`Falha no backup Google Drive: ${e.message || e}`);
+        }
+    }
+
+    async function restoreHistoryFromGoogleDrive() {
+        try {
+            setCloudStatus('Conectando ao Google...');
+            await getGoogleDriveToken(false);
+
+            setCloudStatus('Localizando backup no Google Drive...');
+            const existing = await findDriveBackupFile();
+            if (!existing) {
+                setCloudStatus('Nenhum backup encontrado no Google Drive.');
+                alert('Nenhum backup do Histórico SQL foi encontrado no Google Drive.');
+                return;
+            }
+
+            const mode = state.importModeReplaceRadio?.checked ? 'replace' : 'merge';
+            const action = mode === 'replace' ? 'substituir o histórico local' : 'mesclar com o histórico local';
+            if (!confirm(`Restaurar backup do Google Drive e ${action}?`)) {
+                setCloudStatus('Restauração cancelada.');
+                return;
+            }
+
+            setCloudStatus('Baixando backup do Google Drive...');
+            const response = await driveFetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(existing.id)}?alt=media`);
+            if (!response.ok) throw new Error(`Erro ao baixar backup do Drive (${response.status}).`);
+
+            const payload = safeJsonParse(await response.text(), null);
+            const history = extractHistoryFromCloudPayload(payload);
+            if (!history) throw new Error('Backup inválido: histórico não encontrado.');
+
+            applyImportedItems(history, mode);
+
+            const settings = getSettings();
+            const next = deepMerge(settings, {
+                cloud: {
+                    lastRestoreAt: new Date().toISOString(),
+                    lastDriveFileId: existing.id
+                }
+            });
+            saveSettings(next);
+            setCloudStatus(`Restauração concluída em ${formatDate(next.cloud.lastRestoreAt)}.`);
+        } catch (e) {
+            console.error('[SQL Helper] Falha na restauração Google Drive:', e);
+            setCloudStatus('Falha na restauração. Veja o console para detalhes.');
+            alert(`Falha na restauração Google Drive: ${e.message || e}`);
+        }
+    }
+
+    async function connectGoogleDriveBackup() {
+        try {
+            setCloudStatus('Abrindo autorização do Google...');
+            await requestGoogleDriveToken(true);
+            setCloudStatus('Google conectado para esta sessão.');
+            alert('Google Drive conectado para esta sessão.');
+        } catch (e) {
+            console.error('[SQL Helper] Falha ao conectar Google Drive:', e);
+            setCloudStatus('Falha ao conectar Google.');
+            alert(`Falha ao conectar Google Drive: ${e.message || e}`);
+        }
     }
 
     /********************************************************************
@@ -1852,6 +2123,16 @@
                 font-size: 12px;
                 box-sizing: border-box;
             }
+            .sql-settings-row input[type="text"] {
+                width: min(360px, 100%);
+                padding: 4px 6px;
+                border-radius: 4px;
+                border: 1px solid #374151;
+                background: #020617;
+                color: #e5e7eb;
+                font-size: 12px;
+                box-sizing: border-box;
+            }
             .sql-settings-row input[type="range"] {
                 width: 180px;
             }
@@ -1941,7 +2222,8 @@
             #sql-helper-sort,
             #sql-helper-tag-filter,
             #sql-helper-comment-textarea,
-            .sql-settings-row input[type="number"] {
+            .sql-settings-row input[type="number"],
+            .sql-settings-row input[type="text"] {
                 background: #fff;
                 color: #20385f;
                 border: 1px solid #b7c5d8;
@@ -2322,6 +2604,7 @@
             body.sql-helper-theme-dark #sql-helper-tag-filter,
             body.sql-helper-theme-dark #sql-helper-comment-textarea,
             body.sql-helper-theme-dark .sql-settings-row input[type="number"],
+            body.sql-helper-theme-dark .sql-settings-row input[type="text"],
             body.sql-helper-theme-dark .sql-settings-row select { background: #020617; color: #e5e7eb; border-color: #475569; }
             body.sql-helper-theme-dark .sql-card-query,
             body.sql-helper-theme-dark #sql-helper-comment-preview { background: #020617; border-color: #1e293b; color: #e5e7eb; }
@@ -2383,6 +2666,7 @@
             body.sql-helper-theme-contrast #sql-helper-tag-filter,
             body.sql-helper-theme-contrast #sql-helper-comment-textarea,
             body.sql-helper-theme-contrast .sql-settings-row input[type="number"],
+            body.sql-helper-theme-contrast .sql-settings-row input[type="text"],
             body.sql-helper-theme-contrast .sql-settings-row select { background: #fff; color: #111827; border-color: #111827; }
             body.sql-helper-theme-contrast .sql-helper-btn,
             body.sql-helper-theme-contrast .sql-card-actions button,
@@ -2705,6 +2989,49 @@
         importOptions.appendChild(importRow);
         importSection.appendChild(importOptions);
 
+        const cloudSection = document.createElement('div');
+        cloudSection.style.borderTop = '1px solid #d6e0eb';
+        cloudSection.style.paddingTop = '10px';
+
+        const cloudTitle = document.createElement('div');
+        cloudTitle.style.fontWeight = '600';
+        cloudTitle.textContent = 'Backup em nuvem';
+
+        const cloudCaption = document.createElement('div');
+        cloudCaption.className = 'sql-helper-export-caption';
+        cloudCaption.textContent = 'Usa Google Drive appDataFolder. Requer OAuth Client ID configurado.';
+
+        const cloudActions = document.createElement('div');
+        cloudActions.style.display = 'flex';
+        cloudActions.style.flexWrap = 'wrap';
+        cloudActions.style.gap = '6px';
+        cloudActions.style.marginTop = '8px';
+
+        const connectGoogleBtn = document.createElement('button');
+        connectGoogleBtn.className = 'sql-helper-btn secondary';
+        setIconButtonContent(connectGoogleBtn, 'Conectar Google', 'settings');
+        connectGoogleBtn.addEventListener('click', connectGoogleDriveBackup);
+
+        const backupGoogleBtn = document.createElement('button');
+        backupGoogleBtn.className = 'sql-helper-btn';
+        setIconButtonContent(backupGoogleBtn, 'Backup no Drive', 'export');
+        backupGoogleBtn.addEventListener('click', backupHistoryToGoogleDrive);
+
+        const restoreGoogleBtn = document.createElement('button');
+        restoreGoogleBtn.className = 'sql-helper-btn secondary';
+        setIconButtonContent(restoreGoogleBtn, 'Restaurar do Drive', 'paste');
+        restoreGoogleBtn.addEventListener('click', restoreHistoryFromGoogleDrive);
+
+        const cloudStatus = document.createElement('div');
+        cloudStatus.className = 'sql-helper-export-caption sql-cloud-status';
+        const cloudSettings = getSettings().cloud;
+        cloudStatus.textContent = cloudSettings.lastBackupAt
+            ? `Último backup: ${formatDate(cloudSettings.lastBackupAt)}`
+            : 'Nenhum backup em nuvem registrado nesta instalação.';
+
+        cloudActions.append(connectGoogleBtn, backupGoogleBtn, restoreGoogleBtn);
+        cloudSection.append(cloudTitle, cloudCaption, cloudActions, cloudStatus);
+
         const dangerSection = document.createElement('div');
         dangerSection.style.borderTop = '1px solid #d6e0eb';
         dangerSection.style.paddingTop = '10px';
@@ -2731,7 +3058,7 @@
         dangerCaption.style.marginTop = '4px';
 
         dangerSection.append(dangerTitle, clearBtn, dangerCaption);
-        sections.append(exportSection, importSection, dangerSection);
+        sections.append(exportSection, importSection, cloudSection, dangerSection);
 
         body.appendChild(sections);
 
@@ -2759,6 +3086,7 @@
         state.exportImportFileInput = fileInput;
         state.importModeMergeRadio = mergeRadio;
         state.importModeReplaceRadio = replaceRadio;
+        state.cloudStatusEl = cloudStatus;
     }
 
     /********************************************************************
@@ -2919,6 +3247,7 @@
         const cardsExpanded = state.settingsOverlay.querySelector('[data-setting="interface.cardsExpandedByDefault"]');
         const showRunCount = state.settingsOverlay.querySelector('[data-setting="interface.showRunCount"]');
         const showIcons = state.settingsOverlay.querySelector('[data-setting="interface.showIcons"]');
+        const googleClientId = state.settingsOverlay.querySelector('[data-setting="cloud.googleClientId"]');
 
         if (autoSave) autoSave.checked = settings.capture.autoSaveEnabled;
         if (captureOnRun) captureOnRun.checked = settings.capture.captureOnRunButton;
@@ -2935,6 +3264,7 @@
         if (cardsExpanded) cardsExpanded.checked = settings.interface.cardsExpandedByDefault;
         if (showRunCount) showRunCount.checked = settings.interface.showRunCount;
         if (showIcons) showIcons.checked = settings.interface.showIcons;
+        if (googleClientId) googleClientId.value = settings.cloud.googleClientId;
 
         state.settingsOverlay.style.display = 'flex';
     }
@@ -3144,6 +3474,23 @@
             })
         );
 
+        const cloudSection = document.createElement('div');
+        cloudSection.className = 'sql-settings-section';
+        cloudSection.innerHTML = '<div class="sql-settings-section-title">Backup em nuvem</div>';
+
+        const googleClientId = document.createElement('input');
+        googleClientId.type = 'text';
+        googleClientId.placeholder = '000000000000-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.apps.googleusercontent.com';
+        googleClientId.setAttribute('data-setting', 'cloud.googleClientId');
+
+        cloudSection.append(
+            createSettingsRow({
+                title: 'Google OAuth Client ID',
+                description: 'Client ID Web do Google Cloud autorizado para o host 10.200.35.7. Usado apenas para obter token temporário do Drive.',
+                control: googleClientId
+            })
+        );
+
         const dangerSection = document.createElement('div');
         dangerSection.className = 'sql-settings-section';
         dangerSection.innerHTML = '<div class="sql-settings-section-title">Dados e restauração</div>';
@@ -3180,7 +3527,7 @@
         dangerActions.append(clearRecentBtn, resetSettingsBtn);
         dangerSection.appendChild(dangerActions);
 
-        sections.append(captureSection, historySection, interfaceSection, dangerSection);
+        sections.append(captureSection, historySection, interfaceSection, cloudSection, dangerSection);
         body.appendChild(sections);
 
         const footer = document.createElement('div');
@@ -3222,6 +3569,9 @@
                     cardsExpandedByDefault: !!cardsExpanded.checked,
                     showRunCount: !!showRunCount.checked,
                     showIcons: !!showIcons.checked
+                },
+                cloud: {
+                    googleClientId: String(googleClientId.value || '').trim()
                 }
             });
 
