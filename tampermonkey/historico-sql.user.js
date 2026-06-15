@@ -1,4 +1,4 @@
-﻿// ==UserScript==
+// ==UserScript==
 // @name         Histórico SQL
 // @namespace    http://tampermonkey.net/
 // @version      2026-06-15.06

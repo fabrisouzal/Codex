@@ -1,4 +1,4 @@
-﻿# PRD - Historico SQL
+# PRD - Historico SQL
 
 ## 1. Visao Geral
 
