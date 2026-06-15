@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Histórico SQL
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-15.01
+// @version      2026-06-15.02
 // @description  Histórico de queries com favoritos, etiquetas, comentários, export/import e painel de configurações
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -9,7 +9,6 @@
 // @match        https://10.200.35.7/*
 // @updateURL    https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/historico-sql.user.js
 // @downloadURL  https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/historico-sql.user.js
-// @require      https://accounts.google.com/gsi/client
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
@@ -1088,7 +1087,17 @@
 
     function ensureGoogleIdentityClient() {
         return new Promise((resolve, reject) => {
+            const src = 'https://accounts.google.com/gsi/client';
             const startedAt = Date.now();
+
+            if (!document.querySelector(`script[src="${src}"]`)) {
+                const script = document.createElement('script');
+                script.src = src;
+                script.async = true;
+                script.defer = true;
+                script.onerror = () => reject(new Error('Não foi possível carregar a biblioteca Google Identity Services.'));
+                document.head.appendChild(script);
+            }
 
             (function waitForGoogle() {
                 if (window.google?.accounts?.oauth2) return resolve(window.google.accounts.oauth2);

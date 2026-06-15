@@ -253,6 +253,7 @@ Pre-requisito:
 - o usuario precisa configurar um Google OAuth Client ID Web nas configuracoes do script;
 - o OAuth Client ID deve estar autorizado no Google Cloud para o host onde o userscript roda;
 - o script solicita apenas o escopo `https://www.googleapis.com/auth/drive.appdata`;
+- a biblioteca Google Identity Services e carregada sob demanda apenas ao usar os botoes de backup;
 - tokens sao temporarios e nao substituem o login Google oficial.
 
 Limitacoes:
