@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Histórico SQL
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-15.03
+// @version      2026-06-15.04
 // @description  Histórico de queries com favoritos, etiquetas, comentários, export/import e painel de configurações
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -36,6 +36,7 @@
     const HISTORY_RENDER_LIMIT = 250;
     const DRIVE_BACKUP_FILENAME = 'historico-sql-backup.json';
     const DRIVE_APPDATA_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+    const DEFAULT_GOOGLE_CLIENT_ID = '193618792005-pgadf4r0ctb4h1srtm8n5kdouql54gp1.apps.googleusercontent.com';
 
     /********************************************************************
      * DEFAULTS
@@ -1062,7 +1063,7 @@
     }
 
     function getGoogleClientId() {
-        return String(getSettings().cloud.googleClientId || '').trim();
+        return String(getSettings().cloud.googleClientId || DEFAULT_GOOGLE_CLIENT_ID).trim();
     }
 
     function ensureGoogleClientIdConfigured() {
@@ -3025,7 +3026,7 @@
 
         const cloudCaption = document.createElement('div');
         cloudCaption.className = 'sql-helper-export-caption';
-        cloudCaption.textContent = 'Usa Google Drive appDataFolder. Requer OAuth Client ID configurado.';
+        cloudCaption.textContent = 'Usa Google Drive appDataFolder. O Client ID padrão já está configurado.';
 
         const cloudActions = document.createElement('div');
         cloudActions.style.display = 'flex';
@@ -3519,8 +3520,8 @@
 
         cloudSection.append(
             createSettingsRow({
-                title: 'Google OAuth Client ID',
-                description: 'Client ID Web do Google Cloud autorizado para o host 10.200.35.7. Usado apenas para obter token temporário do Drive.',
+                title: 'Google OAuth Client ID avançado',
+                description: 'Opcional. Deixe em branco para usar o Client ID padrão embutido no script. Não informe Client Secret.',
                 control: googleClientId
             })
         );

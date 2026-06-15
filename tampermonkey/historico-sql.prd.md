@@ -251,11 +251,13 @@ Comportamentos existentes:
 
 Pre-requisito:
 
-- o usuario precisa configurar um Google OAuth Client ID Web nas configuracoes do script;
+- o script possui um Google OAuth Client ID Web padrao embutido;
+- o usuario pode sobrescrever o Google OAuth Client ID nas configuracoes avancadas, se necessario;
 - o OAuth Client ID deve estar autorizado no Google Cloud para o host onde o userscript roda;
 - o script solicita apenas o escopo `https://www.googleapis.com/auth/drive.appdata`;
 - a biblioteca Google Identity Services e carregada sob demanda apenas ao usar os botoes de backup;
 - tokens sao temporarios e nao substituem o login Google oficial.
+- Client Secret nao deve ser usado no userscript.
 
 Limitacoes:
 
@@ -292,7 +294,7 @@ Interface:
 
 Backup em nuvem:
 
-- Google OAuth Client ID.
+- Google OAuth Client ID avancado e opcional.
 
 Dados e restauracao:
 
@@ -345,7 +347,7 @@ Chaves principais:
 
 Metadados de backup em nuvem tambem ficam salvos nas configuracoes locais, incluindo:
 
-- Google OAuth Client ID;
+- Google OAuth Client ID opcional, quando sobrescrito localmente;
 - data do ultimo backup;
 - data da ultima restauracao;
 - ultimo ID de arquivo usado no Drive.
@@ -415,7 +417,8 @@ Cada item possui:
 - O usuario deve conseguir favoritar, renomear, etiquetar, comentar, copiar e excluir uma query.
 - O menu Etiquetas deve permitir renomear e excluir etiquetas globalmente.
 - O menu Configuracoes deve salvar preferencias e restaurar padroes.
-- O usuario deve conseguir configurar um Google OAuth Client ID para backup em nuvem.
+- O usuario deve conseguir usar o backup em nuvem com o Google OAuth Client ID padrao embutido.
+- O usuario deve conseguir sobrescrever o Google OAuth Client ID nas configuracoes avancadas.
 - O usuario deve conseguir enviar backup manual para o Google Drive.
 - O usuario deve conseguir restaurar backup manual do Google Drive.
 - Exportacao JSON/CSV deve gerar arquivo baixavel.
