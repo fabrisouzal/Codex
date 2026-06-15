@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Editor de Query
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-11.01
+// @version      2026-06-15.01
 // @description  Editor SQL Pro. Accordion para ocultar/mostrar query + Export .sql + temas + painel de configurações.
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -477,11 +477,15 @@
       ".sql-toolbar .tm-sep{opacity:.55;padding:0 6px;}",
       ".sql-editor-stats,.sql-lint-warning{font-size:11px;margin-top:3px;}",
       ".sql-lint-warning{color:#a00000;}",
+      ".sql-editor-container-pro .CodeMirror{height:300px;}",
+      ".sql-editor-container-pro .CodeMirror-scroll{overflow:auto !important;}",
+      ".sql-editor-container-pro .CodeMirror-vscrollbar{z-index:80;}",
+      ".sql-editor-container-pro .CodeMirror-hscrollbar{z-index:80;}",
       ".CodeMirror-gutter-sql-lint-gutter{width:.6em;}",
       /* Handles de redimensionamento do editor */
-      ".cm-resize-handle{position:absolute;left:0;right:12px;bottom:0;height:8px;cursor:ns-resize;z-index:98;background:rgba(120,120,120,.25);}",
-      ".cm-resize-handle-x{position:absolute;top:0;bottom:12px;right:0;width:8px;cursor:ew-resize;z-index:98;background:rgba(120,120,120,.2);}",
-      ".cm-resize-handle-diag{position:absolute;right:0;bottom:0;width:12px;height:12px;cursor:nwse-resize;z-index:99;background:linear-gradient(135deg,rgba(120,120,120,.45),rgba(120,120,120,.05) 60%);}",
+      ".cm-resize-handle{position:absolute;left:0;right:18px;bottom:0;height:8px;cursor:ns-resize;z-index:40;background:rgba(120,120,120,.25);}",
+      ".cm-resize-handle-x{position:absolute;top:0;bottom:18px;right:18px;width:6px;cursor:ew-resize;z-index:40;background:rgba(120,120,120,.14);}",
+      ".cm-resize-handle-diag{position:absolute;right:18px;bottom:0;width:12px;height:12px;cursor:nwse-resize;z-index:40;background:linear-gradient(135deg,rgba(120,120,120,.45),rgba(120,120,120,.05) 60%);}",
       /* Accordion */
       ".tm-query-accordion{border:1px solid #cfdbe8;border-radius:8px;overflow:hidden;background:#fff;margin-bottom:10px;box-shadow:0 1px 2px rgba(32,56,95,.08);}",
       ".tm-query-acc-hd{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:5px 10px;background:linear-gradient(#f7fbff,#eef4fb);cursor:pointer;user-select:none;color:#20385f;}",
