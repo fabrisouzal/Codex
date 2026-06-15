@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Histórico SQL
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-15.04
+// @version      2026-06-15.05
 // @description  Histórico de queries com favoritos, etiquetas, comentários, export/import e painel de configurações
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -3028,6 +3028,10 @@
         cloudCaption.className = 'sql-helper-export-caption';
         cloudCaption.textContent = 'Usa Google Drive appDataFolder. O Client ID padrão já está configurado.';
 
+        const cloudOrigin = document.createElement('div');
+        cloudOrigin.className = 'sql-helper-export-caption';
+        cloudOrigin.innerHTML = `Origem atual para cadastrar no Google Cloud: <code>${escapeHtml(location.origin)}</code>`;
+
         const cloudActions = document.createElement('div');
         cloudActions.style.display = 'flex';
         cloudActions.style.flexWrap = 'wrap';
@@ -3047,6 +3051,17 @@
             openSettingsModal();
         });
 
+        const copyOriginBtn = document.createElement('button');
+        copyOriginBtn.className = 'sql-helper-btn secondary';
+        setIconButtonContent(copyOriginBtn, 'Copiar origem', 'copy');
+        copyOriginBtn.title = 'Copiar origem JavaScript autorizada para o Google Cloud';
+        copyOriginBtn.addEventListener('click', async () => {
+            const ok = await copyToClipboard(location.origin);
+            setCloudStatus(ok
+                ? `Origem copiada: ${location.origin}`
+                : `Copie manualmente a origem: ${location.origin}`);
+        });
+
         const backupGoogleBtn = document.createElement('button');
         backupGoogleBtn.className = 'sql-helper-btn';
         setIconButtonContent(backupGoogleBtn, 'Backup no Drive', 'export');
@@ -3064,8 +3079,8 @@
             ? `Último backup: ${formatDate(cloudSettings.lastBackupAt)}`
             : 'Nenhum backup em nuvem registrado nesta instalação.';
 
-        cloudActions.append(configureGoogleBtn, connectGoogleBtn, backupGoogleBtn, restoreGoogleBtn);
-        cloudSection.append(cloudTitle, cloudCaption, cloudActions, cloudStatus);
+        cloudActions.append(configureGoogleBtn, copyOriginBtn, connectGoogleBtn, backupGoogleBtn, restoreGoogleBtn);
+        cloudSection.append(cloudTitle, cloudCaption, cloudOrigin, cloudActions, cloudStatus);
 
         const dangerSection = document.createElement('div');
         dangerSection.style.borderTop = '1px solid #d6e0eb';

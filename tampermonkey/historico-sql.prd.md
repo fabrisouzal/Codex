@@ -238,6 +238,7 @@ Comportamentos existentes:
 
 - conectar Google para a sessao atual do navegador;
 - abrir configuracao do Google OAuth Client ID quando o backup em nuvem ainda nao estiver configurado;
+- mostrar e copiar a origem JavaScript atual que deve ser cadastrada no Google Cloud;
 - enviar backup manual do historico para o Google Drive;
 - restaurar backup do Google Drive;
 - usar o modo de importacao selecionado no modal:
@@ -254,6 +255,7 @@ Pre-requisito:
 - o script possui um Google OAuth Client ID Web padrao embutido;
 - o usuario pode sobrescrever o Google OAuth Client ID nas configuracoes avancadas, se necessario;
 - o OAuth Client ID deve estar autorizado no Google Cloud para o host onde o userscript roda;
+- em caso de `origin_mismatch`, o usuario deve copiar a origem atual exibida no painel e cadastra-la em Authorized JavaScript origins;
 - o script solicita apenas o escopo `https://www.googleapis.com/auth/drive.appdata`;
 - a biblioteca Google Identity Services e carregada sob demanda apenas ao usar os botoes de backup;
 - tokens sao temporarios e nao substituem o login Google oficial.
