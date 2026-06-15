@@ -1,4 +1,4 @@
-# PRD - Historico SQL
+﻿# PRD - Historico SQL
 
 ## 1. Visao Geral
 
@@ -230,46 +230,7 @@ Zona de perigo:
 
 - limpar todo o historico mediante confirmacao.
 
-### 6.10 Backup em nuvem Google Drive
-
-O script possui backup manual em nuvem usando Google Drive.
-
-Comportamentos existentes:
-
-- conectar Google para a sessao atual do navegador;
-- abrir configuracao do Google OAuth Client ID quando o backup em nuvem ainda nao estiver configurado;
-- mostrar e copiar a origem JavaScript atual que deve ser cadastrada no Google Cloud;
-- enviar backup manual do historico para o Google Drive;
-- restaurar backup do Google Drive;
-- usar o modo de importacao selecionado no modal:
-  - mesclar com historico atual;
-  - substituir historico atual;
-- salvar o arquivo `historico-sql-backup.json`;
-- usar o espaco oculto `appDataFolder` do Google Drive;
-- registrar localmente data do ultimo backup;
-- registrar localmente data da ultima restauracao;
-- manter `localStorage` como fonte principal do historico.
-
-Pre-requisito:
-
-- o script possui um Google OAuth Client ID Web padrao embutido;
-- o usuario pode sobrescrever o Google OAuth Client ID nas configuracoes avancadas, se necessario;
-- o OAuth Client ID deve estar autorizado no Google Cloud para o host onde o userscript roda;
-- em caso de `origin_mismatch`, o usuario deve copiar a origem atual exibida no painel e cadastra-la em Authorized JavaScript origins;
-- o script solicita apenas o escopo `https://www.googleapis.com/auth/drive.appdata`;
-- a biblioteca Google Identity Services e carregada sob demanda apenas ao usar os botoes de backup;
-- tokens sao temporarios e nao substituem o login Google oficial.
-- Client Secret nao deve ser usado no userscript.
-
-Limitacoes:
-
-- nao ha sincronizacao automatica em tempo real;
-- nao ha resolucao avancada de conflito entre maquinas;
-- o backup e manual;
-- cada OAuth Client ID tem seu proprio `appDataFolder`;
-- o arquivo fica oculto no Drive e nao aparece como documento comum para o usuario.
-
-### 6.11 Configuracoes
+### 6.10 Configuracoes
 
 O menu de Configuracoes organiza preferencias em secoes.
 
@@ -294,16 +255,12 @@ Interface:
 - exibir contagem de execucoes no card;
 - mostrar ou ocultar icones nos botoes.
 
-Backup em nuvem:
-
-- Google OAuth Client ID avancado e opcional.
-
 Dados e restauracao:
 
 - limpar buscas recentes;
 - restaurar configuracoes padrao.
 
-### 6.12 Temas visuais
+### 6.11 Temas visuais
 
 Temas existentes:
 
@@ -314,7 +271,7 @@ Temas existentes:
 
 Os temas afetam painel, cards, modais, botoes, campos e realce SQL.
 
-### 6.13 Integracao com Editor de Query
+### 6.12 Integracao com Editor de Query
 
 O Historico SQL tenta usar a ponte global `window.__SQL_EDITOR_QUERY_API__`, quando disponivel.
 
@@ -346,13 +303,6 @@ Chaves principais:
 - `sql_helper_execucao_direta_settings_v3`;
 - `sql_helper_execucao_direta_ui_state_v1`;
 - `sql_helper_recent_searches_v1`.
-
-Metadados de backup em nuvem tambem ficam salvos nas configuracoes locais, incluindo:
-
-- Google OAuth Client ID opcional, quando sobrescrito localmente;
-- data do ultimo backup;
-- data da ultima restauracao;
-- ultimo ID de arquivo usado no Drive.
 
 ### Modelo de item do historico
 
@@ -402,7 +352,6 @@ Cada item possui:
 
 - O historico fica restrito ao navegador/perfil onde o script esta instalado.
 - Sem sincronizacao remota nativa.
-- Backup em nuvem manual disponivel via Google Drive, sem sincronizacao automatica.
 - Sem banco de dados externo.
 - Sem IA remota ativa; sugestoes de nome sao heuristicas locais.
 - Realce SQL e leve, focado em leitura, nao em parsing SQL completo.
@@ -419,10 +368,6 @@ Cada item possui:
 - O usuario deve conseguir favoritar, renomear, etiquetar, comentar, copiar e excluir uma query.
 - O menu Etiquetas deve permitir renomear e excluir etiquetas globalmente.
 - O menu Configuracoes deve salvar preferencias e restaurar padroes.
-- O usuario deve conseguir usar o backup em nuvem com o Google OAuth Client ID padrao embutido.
-- O usuario deve conseguir sobrescrever o Google OAuth Client ID nas configuracoes avancadas.
-- O usuario deve conseguir enviar backup manual para o Google Drive.
-- O usuario deve conseguir restaurar backup manual do Google Drive.
 - Exportacao JSON/CSV deve gerar arquivo baixavel.
 - Importacao JSON/CSV deve mesclar ou substituir conforme modo escolhido.
 - Os temas Office claro, Suave, Escuro e Alto contraste devem ser aplicaveis.
