@@ -237,6 +237,7 @@ O script possui backup manual em nuvem usando Google Drive.
 Comportamentos existentes:
 
 - conectar Google para a sessao atual do navegador;
+- abrir configuracao do Google OAuth Client ID quando o backup em nuvem ainda nao estiver configurado;
 - enviar backup manual do historico para o Google Drive;
 - restaurar backup do Google Drive;
 - usar o modo de importacao selecionado no modal:

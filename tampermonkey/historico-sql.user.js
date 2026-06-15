@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Histórico SQL
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-15.02
+// @version      2026-06-15.03
 // @description  Histórico de queries com favoritos, etiquetas, comentários, export/import e painel de configurações
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -1065,6 +1065,22 @@
         return String(getSettings().cloud.googleClientId || '').trim();
     }
 
+    function ensureGoogleClientIdConfigured() {
+        if (getGoogleClientId()) return true;
+        const message = [
+            'Backup em nuvem ainda não configurado.',
+            '',
+            'Informe o Google OAuth Client ID em:',
+            'Configurações > Backup em nuvem.',
+            '',
+            'Depois clique em Conectar Google novamente.'
+        ].join('\n');
+        setCloudStatus('Configure o Google OAuth Client ID antes de conectar.');
+        alert(message);
+        openSettingsModal();
+        return false;
+    }
+
     function buildCloudBackupPayload() {
         return {
             app: 'Historico SQL',
@@ -1112,8 +1128,6 @@
     async function requestGoogleDriveToken(forceConsent) {
         const clientId = getGoogleClientId();
         if (!clientId) {
-            alert('Informe o OAuth Client ID do Google nas Configurações antes de usar backup em nuvem.');
-            openSettingsModal();
             throw new Error('OAuth Client ID não configurado.');
         }
 
@@ -1228,6 +1242,7 @@
 
     async function backupHistoryToGoogleDrive() {
         try {
+            if (!ensureGoogleClientIdConfigured()) return;
             setCloudStatus('Conectando ao Google...');
             await getGoogleDriveToken(false);
 
@@ -1259,6 +1274,7 @@
 
     async function restoreHistoryFromGoogleDrive() {
         try {
+            if (!ensureGoogleClientIdConfigured()) return;
             setCloudStatus('Conectando ao Google...');
             await getGoogleDriveToken(false);
 
@@ -1305,6 +1321,7 @@
 
     async function connectGoogleDriveBackup() {
         try {
+            if (!ensureGoogleClientIdConfigured()) return;
             setCloudStatus('Abrindo autorização do Google...');
             await requestGoogleDriveToken(true);
             setCloudStatus('Google conectado para esta sessão.');
@@ -3021,6 +3038,14 @@
         setIconButtonContent(connectGoogleBtn, 'Conectar Google', 'settings');
         connectGoogleBtn.addEventListener('click', connectGoogleDriveBackup);
 
+        const configureGoogleBtn = document.createElement('button');
+        configureGoogleBtn.className = 'sql-helper-btn secondary';
+        setIconButtonContent(configureGoogleBtn, 'Configurar Client ID', 'edit');
+        configureGoogleBtn.addEventListener('click', () => {
+            setCloudStatus('Informe o Google OAuth Client ID em Configurações.');
+            openSettingsModal();
+        });
+
         const backupGoogleBtn = document.createElement('button');
         backupGoogleBtn.className = 'sql-helper-btn';
         setIconButtonContent(backupGoogleBtn, 'Backup no Drive', 'export');
@@ -3038,7 +3063,7 @@
             ? `Último backup: ${formatDate(cloudSettings.lastBackupAt)}`
             : 'Nenhum backup em nuvem registrado nesta instalação.';
 
-        cloudActions.append(connectGoogleBtn, backupGoogleBtn, restoreGoogleBtn);
+        cloudActions.append(configureGoogleBtn, connectGoogleBtn, backupGoogleBtn, restoreGoogleBtn);
         cloudSection.append(cloudTitle, cloudCaption, cloudActions, cloudStatus);
 
         const dangerSection = document.createElement('div');
