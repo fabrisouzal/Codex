@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Editor de Query
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-15.01
+// @version      2026-06-16.01
 // @description  Editor SQL Pro. Accordion para ocultar/mostrar query + Export .sql + temas + painel de configurações.
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -30,9 +30,9 @@
   // ===================================================================
   var CFG = {
     settingsVersion: 1,
-    execWarnThresholdSeconds: 10,
-    execFallbackTimeoutSeconds: 60,
-    autoCollapseQueryAfterExecDefault: true,
+    execWarnThresholdSeconds: 60,
+    execFallbackTimeoutSeconds: 0,
+    autoCollapseQueryAfterExecDefault: false,
     // Seletores da página de destino — centralizados para facilitar manutenção
     selectors: {
       textarea:      "#edtdeclaracao",
@@ -295,8 +295,8 @@
   }
 
   function getExecToastPosition() {
-    var value = storage.get(KEYS.execToastPos) || "bottom-left";
-    return ["bottom-left", "bottom-right", "top-left", "top-right", "top-center", "bottom-center"].indexOf(value) >= 0 ? value : "bottom-left";
+    var value = storage.get(KEYS.execToastPos) || "bottom-center";
+    return ["bottom-left", "bottom-right", "top-left", "top-right", "top-center", "bottom-center"].indexOf(value) >= 0 ? value : "bottom-center";
   }
 
   function getExecToastTheme() {
@@ -305,8 +305,8 @@
   }
 
   function getExecToastSize() {
-    var value = storage.get(KEYS.execToastSize) || "normal";
-    return ["compact", "normal", "large"].indexOf(value) >= 0 ? value : "normal";
+    var value = storage.get(KEYS.execToastSize) || "large";
+    return ["compact", "normal", "large"].indexOf(value) >= 0 ? value : "large";
   }
 
   function getExecToastHideSeconds() {
@@ -345,15 +345,21 @@
     { key: "settings",      label: "Config na ribbon" }
   ];
 
+  var DEFAULT_RIBBON_ITEMS_VISIBLE = {
+    timerRestore: false,
+    settings: false
+  };
+
   function getRibbonIconsVisible() {
-    return getStoredBool(KEYS.ribbonIcons, true);
+    return getStoredBool(KEYS.ribbonIcons, false);
   }
 
   function getRibbonItemsVisibleMap() {
     var saved = storage.getJson(KEYS.ribbonItems) || {};
     var out = {};
     RIBBON_ITEMS.forEach(function (item) {
-      out[item.key] = saved[item.key] !== false;
+      var defaultVisible = DEFAULT_RIBBON_ITEMS_VISIBLE[item.key] !== false;
+      out[item.key] = Object.prototype.hasOwnProperty.call(saved, item.key) ? saved[item.key] !== false : defaultVisible;
     });
     return out;
   }
@@ -759,14 +765,14 @@
     storage.set(KEYS.execWarn, CFG.execWarnThresholdSeconds);
     storage.set(KEYS.execFallback, CFG.execFallbackTimeoutSeconds);
     storage.set(KEYS.execCollapse, CFG.autoCollapseQueryAfterExecDefault ? "on" : "off");
-    storage.set(KEYS.execToastPos, "bottom-left");
+    storage.set(KEYS.execToastPos, "bottom-center");
     storage.set(KEYS.execToastTheme, "dark");
-    storage.set(KEYS.execToastSize, "normal");
+    storage.set(KEYS.execToastSize, "large");
     storage.set(KEYS.execToastHide, "2");
     storage.set(KEYS.execToastDetail, "on");
     storage.set(KEYS.execToastProgress, "on");
-    storage.set(KEYS.ribbonIcons, "on");
-    storage.setJson(KEYS.ribbonItems, {});
+    storage.set(KEYS.ribbonIcons, "off");
+    storage.setJson(KEYS.ribbonItems, DEFAULT_RIBBON_ITEMS_VISIBLE);
     setToolbarVisible(true);
     setLintEnabled(true);
     state.themeMode = "system";
