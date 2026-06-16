@@ -260,7 +260,24 @@ Dados e restauracao:
 - limpar buscas recentes;
 - restaurar configuracoes padrao.
 
-### 6.11 Temas visuais
+### 6.11 Padroes de instalacao
+
+Na primeira instalacao ou ao restaurar padroes, o script deve iniciar com:
+
+- Capturar historico automaticamente: desligado;
+- Capturar ao clicar em Executar: ligado;
+- Capturar ao pressionar Ctrl+Enter: ligado;
+- Ignorar queries repetidas em sequencia: ligado;
+- Limite de itens salvos: `99999999`;
+- Limite de buscas recentes: `8`;
+- Limite de caracteres do comentario: `600`;
+- Largura do painel: `500px`;
+- Tema visual: Escuro;
+- Cards expandidos por padrao: ligado;
+- Exibir contagem de execucoes no card: ligado;
+- Mostrar icones nos botoes: desligado.
+
+### 6.12 Temas visuais
 
 Temas existentes:
 
@@ -271,7 +288,7 @@ Temas existentes:
 
 Os temas afetam painel, cards, modais, botoes, campos e realce SQL.
 
-### 6.12 Integracao com Editor de Query
+### 6.13 Integracao com Editor de Query
 
 O Historico SQL tenta usar a ponte global `window.__SQL_EDITOR_QUERY_API__`, quando disponivel.
 

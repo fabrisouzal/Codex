@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Histórico SQL
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-15.06
+// @version      2026-06-16.01
 // @description  Histórico de queries com favoritos, etiquetas, comentários, export/import e painel de configurações
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -42,7 +42,7 @@
     const DEFAULT_SETTINGS = {
         schemaVersion: SETTINGS_SCHEMA_VERSION,
         capture: {
-            autoSaveEnabled: true,
+            autoSaveEnabled: false,
             captureOnRunButton: true,
             captureOnCtrlEnter: true,
             ignoreConsecutiveDuplicates: true
@@ -53,11 +53,11 @@
             commentMaxLength: 600
         },
         interface: {
-            panelWidth: 430,
-            theme: 'office',
-            cardsExpandedByDefault: false,
+            panelWidth: 500,
+            theme: 'dark',
+            cardsExpandedByDefault: true,
             showRunCount: true,
-            showIcons: true
+            showIcons: false
         }
     };
 
