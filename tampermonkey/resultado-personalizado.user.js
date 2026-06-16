@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Resultado Personalizado
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-11.01
+// @version      2026-06-16.01
 // @description  Jornada "Resultado Personalizado": Grid em acordeon, filtros, seleção, copiar grid/tabela/célula/coluna/linha e exportar CSV/HTML/TXT/XLSX/JPG.
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -418,13 +418,16 @@
       enableShortcuts: true,
       copyAsTable: COPY_AS_TABLE,
       showToasts: true,
-      showToolbarIcons: true,
+      showToolbarIcons: false,
       showToolbar: true,
       toastScale: 1.6,
       toastDurationMs: 2500,
       autoRefreshInsightsOnFilter: true,
       confirmReset: true,
-      hiddenToolbarButtons: {},
+      hiddenToolbarButtons: {
+        exp_jpg: true,
+        reset: true
+      },
       schemaVersion: CONFIG_SCHEMA_VERSION
     };
   }

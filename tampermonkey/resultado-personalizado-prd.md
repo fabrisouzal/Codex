@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Resultado Personalizado.user.js`
 
 Arquivo publicado: `tampermonkey/resultado-personalizado.user.js`
 
-Versao do script: `2026-06-11.01`
+Versao do script: `2026-06-16.01`
 
-Versao do documento: `2026-06-11.01`
+Versao do documento: `2026-06-16.01`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/resultado-personalizado.user.js`
@@ -156,10 +156,11 @@ O painel de configuracoes organiza preferencias do grid e da experiencia visual.
 Comportamentos existentes:
 
 - Organizacao por grupos de uso.
-- Opcao para mostrar ou ocultar icones.
+- Instalar com icones da toolbar ocultos por padrao, mantendo a opcao para reativar.
 - Restaurar padrao.
 - Ajustes visuais preservando o tema atual.
 - Comandos agrupados para reduzir confusao e excesso de botoes.
+- `Salvar JPG` e `Reset completo` ocultos por padrao na toolbar, com possibilidade de reativacao no painel.
 
 ## 6. Persistencia e Estado
 
@@ -181,6 +182,22 @@ Diretrizes atuais:
 - Atualizacao via `@updateURL` e `@downloadURL`.
 - Validacao sintatica antes de publicacao.
 - Publicacao versionada no GitHub.
+
+## 7.1 Padrao de Instalacao
+
+A instalacao nova e a acao `Restaurar padrao` devem carregar a configuracao base abaixo:
+
+- Mostrar painel de insights: ligado.
+- Mostrar insights de status: ligado.
+- Atualizar insights ao filtrar: ligado.
+- Atalho Ctrl+C na selecao: ligado.
+- Mostrar icones nos botoes: desligado.
+- Mostrar toasts: ligado.
+- Tamanho do toast: grande.
+- Tempo do toast: 2,5 segundos.
+- Copiar grid como tabela alinhada: ligado.
+- Confirmar reset completo: ligado.
+- Botoes da toolbar: todos ligados, exceto `Salvar JPG` e `Reset completo`.
 
 ## 8. Criterios de Atualizacao
 
