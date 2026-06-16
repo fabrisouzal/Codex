@@ -1,5 +1,13 @@
 # PRD - Historico SQL
 
+## Versao
+
+- Versao do PRD: `2026-06-16.01`
+- Versao do userscript documentada: `2026-06-16.01`
+- Arquivo documentado: `tampermonkey/historico-sql.user.js`
+- Data de referencia: `2026-06-16`
+- Persistencia vigente: `localStorage`
+
 ## 1. Visao Geral
 
 O Historico SQL e um userscript Tampermonkey para apoiar analistas e desenvolvedores que trabalham na tela `ExecucaoDireta.aspx` do portal SQL interno em `10.200.35.7`.
