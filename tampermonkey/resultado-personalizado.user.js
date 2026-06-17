@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Resultado Personalizado
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-16.01
+// @version      2026-06-17.01
 // @description  Jornada "Resultado Personalizado": Grid em acordeon, filtros, seleção, copiar grid/tabela/célula/coluna/linha e exportar CSV/HTML/TXT/XLSX/JPG.
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -1014,6 +1014,24 @@
     return section;
   }
 
+  function getGridSelectedText(table) {
+    var sel = window.getSelection ? window.getSelection() : null;
+    if (!sel || sel.isCollapsed || !String(sel.toString() || "").trim()) return "";
+    var selectedText = String(sel.toString() || "").trim();
+    if (!table || !table.contains) return selectedText;
+
+    for (var i = 0; i < sel.rangeCount; i++) {
+      var range = sel.getRangeAt(i);
+      var startNode = range.startContainer && range.startContainer.nodeType === 1 ? range.startContainer : range.startContainer.parentNode;
+      var endNode = range.endContainer && range.endContainer.nodeType === 1 ? range.endContainer : range.endContainer.parentNode;
+      var commonNode = range.commonAncestorContainer && range.commonAncestorContainer.nodeType === 1 ? range.commonAncestorContainer : range.commonAncestorContainer.parentNode;
+      if ((startNode && table.contains(startNode)) || (endNode && table.contains(endNode)) || (commonNode && table.contains(commonNode))) {
+        return selectedText;
+      }
+    }
+    return "";
+  }
+
   function positionContextMenu(menu, ev) {
     menu.style.display = "block";
     menu.style.left = "0px";
@@ -1033,6 +1051,7 @@
     var row = isCell ? target.parentElement : null;
     var colName = (colIndex > 0 && table.rows[0] && table.rows[0].cells[colIndex]) ? getHeaderText(table.rows[0].cells[colIndex]) : "";
     var cellText = isCell ? (target.innerText || target.textContent || "").trim() : "";
+    var selectedText = getGridSelectedText(table);
 
     if (isHeader) selectColumn(table, colIndex);
     else if (isCell) selectCell(table, target);
@@ -1054,6 +1073,11 @@
 
     if (isCell) {
       var copySec = addContextSection(menu);
+      if (selectedText) {
+        addContextAction(copySec, "S", "Copiar seleção", function () {
+          reliableCopy(selectedText, function (ok) { showToast(ok ? "Seleção copiada" : "Falha ao copiar seleção"); });
+        });
+      }
       addContextAction(copySec, "C", "Copiar célula", function () {
         copySelectedCell(function (ok) { showToast(ok ? "Célula copiada" : "Falha ao copiar célula"); });
       });

@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Resultado Personalizado.user.js`
 
 Arquivo publicado: `tampermonkey/resultado-personalizado.user.js`
 
-Versao do script: `2026-06-16.01`
+Versao do script: `2026-06-17.01`
 
-Versao do documento: `2026-06-16.01`
+Versao do documento: `2026-06-17.01`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/resultado-personalizado.user.js`
@@ -101,6 +101,7 @@ Comportamentos existentes:
 
 - Acionamento contextual no resultado.
 - Opcoes relacionadas ao ponto clicado.
+- Copiar selecao de texto quando houver apenas um trecho da celula selecionado.
 - Fixar linha.
 - Destacar linha.
 - Acoes de copia e manipulacao contextual.
@@ -134,6 +135,7 @@ O script melhora as formas de reutilizar os dados retornados.
 Comportamentos existentes:
 
 - Copiar celula.
+- Copiar selecao textual parcial dentro de celulas extensas.
 - Copiar linha.
 - Copiar coluna.
 - Copiar tabela ou grid.
