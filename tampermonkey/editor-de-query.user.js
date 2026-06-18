@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Editor de Query
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-16.01
+// @version      2026-06-18.01
 // @description  Editor SQL Pro. Accordion para ocultar/mostrar query + Export .sql + temas + painel de configurações.
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -183,6 +183,7 @@
     // Restauração de seleção após execução parcial
     restoreAfterExec:   null,
     execOverrideText:   null,
+    execEditorSnapshot: null,
     // Flags de inicialização
     cssInjected:        false,
     aspnetHooked:       false,
@@ -513,6 +514,12 @@
       ".tm-modal-hd .ttl{font-size:12px;font-weight:800;}",
       ".tm-modal-hd select,.tm-modal-hd button{font-size:12px;padding:4px 8px;border-radius:8px;border:1px solid #aaa;background:#fff;cursor:pointer;}",
       ".tm-modal-bd{padding:10px;overflow:auto;}",
+      ".tm-modal-bd:has(.tm-query-accordion){display:flex;flex:1;min-height:0;overflow:hidden;}",
+      ".tm-modal-bd .tm-query-accordion{display:flex;flex:1;min-height:0;flex-direction:column;margin-bottom:0;}",
+      ".tm-modal-bd .tm-query-acc-bd{display:flex;flex:1;min-height:0;overflow:hidden;}",
+      ".tm-modal-bd .sql-editor-container-pro{display:flex;flex:1;min-height:0;flex-direction:column;width:100%;}",
+      ".tm-modal-bd .sql-editor-container-pro .CodeMirror{flex:1;min-height:180px;width:100% !important;height:auto !important;}",
+      ".tm-modal-bd .sql-editor-container-pro .CodeMirror-scroll{min-height:0;}",
       /* Painel de configurações */
       ".tm-settings-win{width:min(920px,94vw);max-height:88vh;background:#fff;border-radius:10px;box-shadow:0 12px 44px rgba(0,0,0,.32);overflow:hidden;display:flex;flex-direction:column;color:#1f2937;}",
       ".tm-settings-hd{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;background:linear-gradient(#f7fbff,#eaf1f9);border-bottom:1px solid #cfdbe8;}",
@@ -709,6 +716,9 @@
     state.modalOverlayEl.addEventListener("mousedown", function (e) {
       if (e.target === state.modalOverlayEl) closeModal();
     }, true);
+    document.addEventListener("keydown", function (e) {
+      if (state.modalIsOpen && e.key === "Escape") closeModal();
+    }, true);
 
     applyModalSize(state.modalSizeSelectEl.value);
   }
@@ -732,7 +742,14 @@
     applyModalSize(loadModalSize());
     syncHeaderButtons();
 
-    if (state.sqlEditor) setTimeout(function () { try { state.sqlEditor.refresh(); } catch (_) {} }, 0);
+    if (state.sqlEditor) {
+      setTimeout(function () {
+        try {
+          state.sqlEditor.refresh();
+          state.sqlEditor.focus();
+        } catch (_) {}
+      }, 0);
+    }
   }
 
   function closeModal() {
@@ -1506,6 +1523,63 @@
     return String(text || "").replace(/;/g, "");
   }
 
+  function captureEditorSnapshotForExecution() {
+    if (!state.modalIsOpen || !state.sqlEditor) {
+      state.execEditorSnapshot = null;
+      return;
+    }
+
+    try {
+      var doc = state.sqlEditor.getDoc();
+      var scroll = state.sqlEditor.getScrollInfo();
+      state.execEditorSnapshot = {
+        text: doc.getValue(),
+        cursor: doc.getCursor(),
+        selections: doc.listSelections ? doc.listSelections() : null,
+        scrollLeft: scroll.left,
+        scrollTop: scroll.top
+      };
+    } catch (_) {
+      state.execEditorSnapshot = null;
+    }
+  }
+
+  function restoreEditorSnapshotAfterExecution() {
+    var snapshot = state.execEditorSnapshot;
+    state.execEditorSnapshot = null;
+    if (!snapshot || !state.sqlEditor) return false;
+
+    try {
+      var doc = state.sqlEditor.getDoc();
+      if (doc.getValue() !== snapshot.text) doc.setValue(snapshot.text);
+      if (snapshot.selections && doc.setSelections) {
+        doc.setSelections(snapshot.selections);
+      } else if (snapshot.cursor) {
+        doc.setCursor(snapshot.cursor);
+      }
+      state.sqlEditor.save();
+      state.sqlEditor.refresh();
+      state.sqlEditor.scrollTo(snapshot.scrollLeft || 0, snapshot.scrollTop || 0);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function keepModalEditorContentVisible() {
+    var snapshot = state.execEditorSnapshot;
+    if (!state.modalIsOpen || !snapshot || !state.sqlEditor) return;
+    try {
+      var doc = state.sqlEditor.getDoc();
+      if (!doc.getValue() && snapshot.text) {
+        doc.setValue(snapshot.text);
+        if (snapshot.selections && doc.setSelections) doc.setSelections(snapshot.selections);
+        state.sqlEditor.refresh();
+        state.sqlEditor.scrollTo(snapshot.scrollLeft || 0, snapshot.scrollTop || 0);
+      }
+    } catch (_) {}
+  }
+
   function prepareQueryForExecution() {
     var changed = false;
     var semicolonRemoved = false;
@@ -2003,6 +2077,7 @@
     state.lastExecStart = null;
 
     restoreEditorAfterPartialExec();
+    restoreEditorSnapshotAfterExecution();
     refreshResultUiAfterExec();
   }
 
@@ -2015,11 +2090,14 @@
       btn.dataset.tmExecHook = "1";
       btn.addEventListener("click", function () {
         prepareQueryForExecution();
+        captureEditorSnapshotForExecution();
 
         var now = performance.now();
         state.lastExecInterval = (state.lastExecStart !== null) ? (now - state.lastExecStart) / 1000 : null;
         state.lastExecStart    = now;
         startExecBox();
+        setTimeout(keepModalEditorContentVisible, 0);
+        setTimeout(keepModalEditorContentVisible, 100);
 
         if (state.execFallbackTimer) clearTimeout(state.execFallbackTimer);
         state.execFallbackTimer = null;
@@ -2027,6 +2105,7 @@
         if (fallbackSeconds > 0) {
           state.execFallbackTimer = setTimeout(function () {
             restoreEditorAfterPartialExec("Tempo limite atingido (editor restaurado)");
+            restoreEditorSnapshotAfterExecution();
             state.execFallbackTimer = null;
           }, fallbackSeconds * 1000);
         }

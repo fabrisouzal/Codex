@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Editor de Query.user.js`
 
 Arquivo publicado: `tampermonkey/editor-de-query.user.js`
 
-Versao do script: `2026-06-11.01`
+Versao do script: `2026-06-18.01`
 
-Versao do documento: `2026-06-11.01`
+Versao do documento: `2026-06-18.01`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/editor-de-query.user.js`
@@ -174,6 +174,10 @@ Comportamentos existentes:
 - Seletor de tamanho do modal: medio, grande, tela.
 - Persistencia do estado do modal.
 - Refresh do CodeMirror apos movimentacao no DOM.
+- Aproveitamento flexivel da altura disponivel na janela maximizada.
+- Foco automatico no editor ao abrir o modo janela.
+- Fechamento do modo janela pela tecla `Esc`.
+- Preservacao do texto, cursor, selecao e posicao de rolagem durante a execucao.
 
 ### 7.10 Painel de Configuracoes
 
