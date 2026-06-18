@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Resultado Personalizado.user.js`
 
 Arquivo publicado: `tampermonkey/resultado-personalizado.user.js`
 
-Versao do script: `2026-06-17.01`
+Versao do script: `2026-06-18.01`
 
-Versao do documento: `2026-06-17.01`
+Versao do documento: `2026-06-18.01`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/resultado-personalizado.user.js`
@@ -140,6 +140,7 @@ Comportamentos existentes:
 - Copiar coluna.
 - Copiar tabela ou grid.
 - Exportar em CSV, HTML, TXT, XLSX e imagem JPG, conforme disponibilidade do recurso.
+- Gerar o CSV com o separador salvo pelo usuario: ponto e virgula, virgula, tabulacao ou barra vertical.
 
 ### 5.10 Resize e Layout
 
@@ -161,6 +162,7 @@ Comportamentos existentes:
 - Instalar com icones da toolbar ocultos por padrao, mantendo a opcao para reativar.
 - Restaurar padrao.
 - Ajustes visuais preservando o tema atual.
+- Preferencia persistente para o separador utilizado na exportacao CSV.
 - Comandos agrupados para reduzir confusao e excesso de botoes.
 - `Salvar JPG` e `Reset completo` ocultos por padrao na toolbar, com possibilidade de reativacao no painel.
 
@@ -197,6 +199,7 @@ A instalacao nova e a acao `Restaurar padrao` devem carregar a configuracao base
 - Mostrar toasts: ligado.
 - Tamanho do toast: grande.
 - Tempo do toast: 2,5 segundos.
+- Separador do CSV: ponto e virgula (`;`).
 - Copiar grid como tabela alinhada: ligado.
 - Confirmar reset completo: ligado.
 - Botoes da toolbar: todos ligados, exceto `Salvar JPG` e `Reset completo`.

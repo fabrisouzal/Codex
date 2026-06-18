@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Resultado Personalizado
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-17.01
+// @version      2026-06-18.01
 // @description  Jornada "Resultado Personalizado": Grid em acordeon, filtros, seleção, copiar grid/tabela/célula/coluna/linha e exportar CSV/HTML/TXT/XLSX/JPG.
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -23,14 +23,14 @@
   var GRID_HEIGHT_DEFAULT = 420;
   var GRID_MIN_HEIGHT = 200;
   var GRID_MAX_HEIGHT_VH = 82;
-  var CONFIG_SCHEMA_VERSION = 1;
+  var CONFIG_SCHEMA_VERSION = 2;
 
   var COPY_AS_TABLE = true;
   var COPY_PAD_EXTRA = 0;
   var COPY_SEPARATOR_DEFAULT = "|";
 
   var TABLE_SEPARATOR = "\t";
-  var CSV_SEPARATOR = ";";
+  var CSV_SEPARATOR_DEFAULT = ";";
 
   var UI_FONT_FAMILY = "Arial, sans-serif";
   var UI_FONT_SIZE_PX = 12;
@@ -422,6 +422,7 @@
       showToolbar: true,
       toastScale: 1.6,
       toastDurationMs: 2500,
+      csvSeparator: CSV_SEPARATOR_DEFAULT,
       autoRefreshInsightsOnFilter: true,
       confirmReset: true,
       hiddenToolbarButtons: {
@@ -446,6 +447,17 @@
   function saveConfig(cfg) {
     cfg.schemaVersion = CONFIG_SCHEMA_VERSION;
     StorageService.setJson(CONFIG_KEY, cfg);
+  }
+
+  function getCsvSeparator() {
+    var allowed = {
+      ";": true,
+      ",": true,
+      "\t": true,
+      "|": true
+    };
+    var separator = userConfig && userConfig.csvSeparator;
+    return allowed[separator] ? separator : CSV_SEPARATOR_DEFAULT;
   }
 
   function isToolbarButtonHidden(btnKey) {
@@ -2199,11 +2211,12 @@
     var rows = getExportRows(table, { includeHeader: true, includeFilterRow: false, includeIndexCol: false });
     if (rows.length <= 1) return alert("Não há linhas visíveis para exportar (filtro pode estar removendo tudo).");
 
+    var separator = getCsvSeparator();
     var csvLines = rows.map(function (r) {
       return r.map(function (cell) {
         var v = (cell || "").replace(/"/g, '""');
         return '"' + v + '"';
-      }).join(CSV_SEPARATOR);
+      }).join(separator);
     });
 
     downloadBlob("consulta_" + tsStamp() + ".csv", "text/csv;charset=utf-8;", "\uFEFF" + csvLines.join("\n"));
@@ -2603,6 +2616,12 @@
       { value: 3500, label: "3,5 segundos" },
       { value: 5000, label: "5 segundos" }
     ]));
+    modal.appendChild(mkSelect("Separador do CSV", "csvSeparator", [
+      { value: ";", label: "Ponto e vírgula (;)" },
+      { value: ",", label: "Vírgula (,)" },
+      { value: "\t", label: "Tabulação" },
+      { value: "|", label: "Barra vertical (|)" }
+    ]));
     modal.appendChild(mkCheck("Confirmar reset completo", "confirmReset"));
 
     var toolbarBtns = actionBarEl ? actionBarEl.querySelectorAll("button[data-tm-btn]") : [];
@@ -2657,7 +2676,7 @@
       for (var s = 0; s < sels.length; s++) {
         var sk = sels[s].dataset.selectKey;
         var raw = sels[s].value;
-        next[sk] = (sk === "toastScale") ? Number(raw) : Number(raw);
+        next[sk] = sk === "csvSeparator" ? raw : Number(raw);
       }
       var toolbarCbs = modal.querySelectorAll("input[type='checkbox'][data-toolbar-key]");
       next.hiddenToolbarButtons = next.hiddenToolbarButtons || {};
@@ -2793,6 +2812,15 @@
       mkCheck("Confirmar reset completo", "confirmReset")
     ]));
 
+    body.appendChild(mkCard("Exportação CSV", "Defina como as colunas serão separadas no arquivo exportado.", [
+      mkSelect("Separador do CSV", "csvSeparator", [
+        { value: ";", label: "Ponto e vírgula (;)" },
+        { value: ",", label: "Vírgula (,)" },
+        { value: "\t", label: "Tabulação" },
+        { value: "|", label: "Barra vertical (|)" }
+      ])
+    ]));
+
     var toolbarBtns = actionBarEl ? actionBarEl.querySelectorAll("button[data-tm-btn]") : [];
     if (toolbarBtns.length) {
       var toggleGrid = document.createElement("div");
@@ -2868,7 +2896,10 @@
       for (var i = 0; i < cbs.length; i++) next[cbs[i].dataset.key] = !!cbs[i].checked;
 
       var sels = modal.querySelectorAll("select[data-select-key]");
-      for (var s = 0; s < sels.length; s++) next[sels[s].dataset.selectKey] = Number(sels[s].value);
+      for (var s = 0; s < sels.length; s++) {
+        var selectKey = sels[s].dataset.selectKey;
+        next[selectKey] = selectKey === "csvSeparator" ? sels[s].value : Number(sels[s].value);
+      }
 
       var toolbarCbs = modal.querySelectorAll("input[type='checkbox'][data-toolbar-key]");
       next.hiddenToolbarButtons = next.hiddenToolbarButtons || {};
