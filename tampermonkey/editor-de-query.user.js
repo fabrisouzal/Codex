@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Editor de Query
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-18.01
+// @version      2026-06-18.02
 // @description  Editor SQL Pro. Accordion para ocultar/mostrar query + Export .sql + temas + painel de configurações.
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -64,6 +64,7 @@
     execToastProgress:"tm:execToast:progressVisible_v1:"+ KEY_BASE,
     ribbonIcons:   "tm:ribbon:iconsVisible_v1:"         + KEY_BASE,
     ribbonItems:   "tm:ribbon:itemsVisible_v1:"         + KEY_BASE,
+    execDraft:     "tm:queryEditor:execDraft_v1:"       + KEY_BASE,
     schemaVersion: "tm:queryEditor:schemaVersion_v1:"    + KEY_BASE
   };
 
@@ -250,6 +251,32 @@
       .replace(/\s+/g, " ")
       .trim();
     return (t || "consulta").slice(0, 80);
+  }
+
+  function saveExecutionDraft(snapshot) {
+    try {
+      sessionStorage.setItem(KEYS.execDraft, JSON.stringify({
+        savedAt: Date.now(),
+        text: snapshot && snapshot.text ? snapshot.text : "",
+        cursor: snapshot ? snapshot.cursor : null,
+        selections: snapshot ? snapshot.selections : null,
+        scrollLeft: snapshot ? snapshot.scrollLeft : 0,
+        scrollTop: snapshot ? snapshot.scrollTop : 0
+      }));
+    } catch (_) {}
+  }
+
+  function consumeExecutionDraft() {
+    try {
+      var raw = sessionStorage.getItem(KEYS.execDraft);
+      if (!raw) return null;
+      sessionStorage.removeItem(KEYS.execDraft);
+      var draft = JSON.parse(raw);
+      if (!draft || !draft.savedAt || Date.now() - draft.savedAt > 10 * 60 * 1000) return null;
+      return draft;
+    } catch (_) {
+      return null;
+    }
   }
 
   /**
@@ -710,7 +737,9 @@
     state.modalWindowEl.appendChild(hd);
     state.modalWindowEl.appendChild(state.modalBodyEl);
     state.modalOverlayEl.appendChild(state.modalWindowEl);
-    document.body.appendChild(state.modalOverlayEl);
+    var textarea = PageAdapter.getTextarea();
+    var pageForm = textarea ? textarea.closest("form") : null;
+    (pageForm || document.body).appendChild(state.modalOverlayEl);
 
     // Fechar ao clicar fora da janela
     state.modalOverlayEl.addEventListener("mousedown", function (e) {
@@ -727,6 +756,12 @@
     ensureModal();
     if (!state.accordionRootEl) return alert("Accordion ainda não foi criado.");
     if (state.modalIsOpen) return;
+
+    var textarea = PageAdapter.getTextarea();
+    var pageForm = textarea ? textarea.closest("form") : null;
+    if (pageForm && state.modalOverlayEl.parentNode !== pageForm) {
+      pageForm.appendChild(state.modalOverlayEl);
+    }
 
     state.modalIsOpen = true;
     storage.set(KEYS.modalOpen, "on");
@@ -1539,6 +1574,7 @@
         scrollLeft: scroll.left,
         scrollTop: scroll.top
       };
+      saveExecutionDraft(state.execEditorSnapshot);
     } catch (_) {
       state.execEditorSnapshot = null;
     }
@@ -1895,6 +1931,11 @@
     if (state.editorInited) return;
     state.editorInited = true;
 
+    var execDraft = consumeExecutionDraft();
+    if (execDraft && !(textarea.value || "").trim() && execDraft.text) {
+      textarea.value = execDraft.text;
+    }
+
     createToolbar(textarea);
 
     var def = getThemeDef(state.themeMode);
@@ -1918,6 +1959,23 @@
 
     state.sqlEditor.on("change", updateStats);
     state.sqlEditor.on("cursorActivity", updateStats);
+
+    if (execDraft) {
+      try {
+        var draftDoc = state.sqlEditor.getDoc();
+        if (execDraft.selections && draftDoc.setSelections) {
+          draftDoc.setSelections(execDraft.selections);
+        } else if (execDraft.cursor) {
+          draftDoc.setCursor(execDraft.cursor);
+        }
+        setTimeout(function () {
+          try {
+            state.sqlEditor.refresh();
+            state.sqlEditor.scrollTo(execDraft.scrollLeft || 0, execDraft.scrollTop || 0);
+          } catch (_) {}
+        }, 0);
+      } catch (_) {}
+    }
 
     applyTheme();
     setupResizeHandlesForEditor();
