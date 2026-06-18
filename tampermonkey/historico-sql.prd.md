@@ -2,10 +2,10 @@
 
 ## Versao
 
-- Versao do PRD: `2026-06-16.01`
-- Versao do userscript documentada: `2026-06-16.01`
+- Versao do PRD: `2026-06-18.01`
+- Versao do userscript documentada: `2026-06-18.01`
 - Arquivo documentado: `tampermonkey/historico-sql.user.js`
-- Data de referencia: `2026-06-16`
+- Data de referencia: `2026-06-18`
 - Persistencia vigente: `localStorage`
 
 ## 1. Visao Geral
@@ -117,6 +117,18 @@ Ordenacoes existentes:
 - etiqueta A-Z;
 - etiqueta Z-A;
 - contagem de execucoes decrescente.
+
+O mecanismo de busca utiliza um indice em memoria por item, contendo:
+
+- texto normalizado de nome, SQL, comentario e etiquetas;
+- SQL normalizado para buscas `FROM:` e `table:`;
+- variantes de data em ISO e formato brasileiro;
+- timestamps pre-calculados para ordenacao;
+- primeira etiqueta pre-calculada para ordenacao alfabetica.
+
+O indice e reconstruido quando o historico e salvo e invalidado quando outra aba altera o `localStorage`. A digitacao usa debounce curto para evitar renderizacoes excessivas sem deixar a interface lenta.
+
+Na exibicao, os cards sao montados em lote com `DocumentFragment`, os conjuntos de palavras-chave SQL sao reutilizados e o HTML do realce SQL sem busca ativa fica armazenado no indice em memoria.
 
 ### 6.4 Cards de query
 

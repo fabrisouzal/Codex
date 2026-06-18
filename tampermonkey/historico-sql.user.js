@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Histórico SQL
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-16.01
+// @version      2026-06-18.01
 // @description  Histórico de queries com favoritos, etiquetas, comentários, export/import e painel de configurações
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -107,6 +107,9 @@
         mutationObserver: null,
         hookRunButtonTimer: null
     };
+
+    let historyCache = null;
+    let historySearchIndex = new Map();
 
     const StorageService = {
         getJson(key, fallback) {
@@ -346,6 +349,83 @@
             .toLowerCase();
     }
 
+    function buildDateSearchText(iso) {
+        if (!iso) return '';
+        const raw = String(iso);
+        const date = new Date(raw);
+        if (Number.isNaN(date.getTime())) return raw;
+        const year = String(date.getFullYear());
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return [
+            raw,
+            `${year}-${month}`,
+            `${year}-${month}-${day}`,
+            `${day}/${month}/${year}`,
+            `${month}/${year}`,
+            formatDate(raw)
+        ].join(' ');
+    }
+
+    function buildHistorySearchRecord(item) {
+        const query = normalizeForSearch(item.query);
+        return {
+            text: normalizeForSearch([
+                item.name || '',
+                item.query,
+                item.comment || '',
+                (item.tags || []).join(' ')
+            ].join('\n')),
+            query,
+            dates: normalizeForSearch([
+                buildDateSearchText(item.createdAt),
+                buildDateSearchText(item.lastUsedAt)
+            ].join(' ')),
+            createdTime: new Date(item.createdAt).getTime() || 0,
+            lastUsedTime: new Date(item.lastUsedAt).getTime() || 0,
+            firstTag: item.tags?.[0] || '',
+            renderedSql: ''
+        };
+    }
+
+    function rebuildHistorySearchIndex(history) {
+        historySearchIndex = new Map();
+        for (const item of history) {
+            historySearchIndex.set(item.id, buildHistorySearchRecord(item));
+        }
+    }
+
+    function invalidateHistoryCache() {
+        historyCache = null;
+        historySearchIndex = new Map();
+    }
+
+    function getHistorySearchRecord(item) {
+        let record = historySearchIndex.get(item.id);
+        if (!record) {
+            record = buildHistorySearchRecord(item);
+            historySearchIndex.set(item.id, record);
+        }
+        return record;
+    }
+
+    function matchesTagFilter(item, selectedTag) {
+        if (!selectedTag) return true;
+        if (selectedTag === '__with_tags__') return item.tags.length > 0;
+        if (selectedTag === '__without_tags__') return item.tags.length === 0;
+        return item.tags.includes(selectedTag);
+    }
+
+    function matchesSearchTerms(item, terms) {
+        if (!terms.length) return true;
+        const searchRecord = getHistorySearchRecord(item);
+        return terms.every(term => {
+            if (term.type === 'from') return searchRecord.query.includes(term.value);
+            if (term.type === 'date') return searchRecord.dates.includes(normalizeForSearch(term.value));
+            return searchRecord.text.includes(term.value);
+        });
+    }
+
     function parseSearchTerms(raw) {
         return raw.trim().split(/\s+/).filter(Boolean).map(term => {
             const fromMatch = term.match(/^(?:from|table):(.+)$/i);
@@ -398,31 +478,32 @@
         return result;
     }
 
+    const SQL_KEYWORD_SET = new Set([
+        'ADD', 'ALTER', 'AND', 'AS', 'ASC', 'BEGIN', 'BETWEEN', 'BY', 'CASE', 'CAST',
+        'COALESCE', 'COLLATE', 'COLUMN', 'COMMIT', 'CONSTRAINT', 'CREATE', 'CROSS',
+        'DATABASE', 'DECLARE', 'DEFAULT', 'DELETE', 'DESC', 'DISTINCT', 'DROP', 'ELSE',
+        'END', 'EXCEPT', 'EXEC', 'EXISTS', 'FOR', 'FOREIGN', 'FROM', 'FULL', 'GROUP',
+        'HAVING', 'IF', 'IN', 'INDEX', 'INNER', 'INSERT', 'INTERSECT', 'INTO', 'IS',
+        'JOIN', 'KEY', 'LEFT', 'LIKE', 'LIMIT', 'NOT', 'NULL', 'ON', 'OR', 'ORDER',
+        'OUTER', 'PRIMARY', 'PROCEDURE', 'RIGHT', 'ROLLBACK', 'ROW_NUMBER', 'SELECT',
+        'SET', 'TABLE', 'THEN', 'TOP', 'TRUNCATE', 'UNION', 'UPDATE', 'VALUES', 'VIEW',
+        'WHEN', 'WHERE', 'WITH'
+    ]);
+    const SQL_TYPE_SET = new Set([
+        'BIGINT', 'BIT', 'CHAR', 'DATE', 'DATETIME', 'DECIMAL', 'FLOAT', 'INT',
+        'MONEY', 'NUMERIC', 'NVARCHAR', 'SMALLINT', 'TEXT', 'TIME', 'TIMESTAMP',
+        'UNIQUEIDENTIFIER', 'VARCHAR', 'XML'
+    ]);
+
     function renderSqlToken(token, nextToken, terms) {
         const upper = token.toUpperCase();
-        const keywordSet = new Set([
-            'ADD', 'ALTER', 'AND', 'AS', 'ASC', 'BEGIN', 'BETWEEN', 'BY', 'CASE', 'CAST',
-            'COALESCE', 'COLLATE', 'COLUMN', 'COMMIT', 'CONSTRAINT', 'CREATE', 'CROSS',
-            'DATABASE', 'DECLARE', 'DEFAULT', 'DELETE', 'DESC', 'DISTINCT', 'DROP', 'ELSE',
-            'END', 'EXCEPT', 'EXEC', 'EXISTS', 'FOR', 'FOREIGN', 'FROM', 'FULL', 'GROUP',
-            'HAVING', 'IF', 'IN', 'INDEX', 'INNER', 'INSERT', 'INTERSECT', 'INTO', 'IS',
-            'JOIN', 'KEY', 'LEFT', 'LIKE', 'LIMIT', 'NOT', 'NULL', 'ON', 'OR', 'ORDER',
-            'OUTER', 'PRIMARY', 'PROCEDURE', 'RIGHT', 'ROLLBACK', 'ROW_NUMBER', 'SELECT',
-            'SET', 'TABLE', 'THEN', 'TOP', 'TRUNCATE', 'UNION', 'UPDATE', 'VALUES', 'VIEW',
-            'WHEN', 'WHERE', 'WITH'
-        ]);
-        const typeSet = new Set([
-            'BIGINT', 'BIT', 'CHAR', 'DATE', 'DATETIME', 'DECIMAL', 'FLOAT', 'INT',
-            'MONEY', 'NUMERIC', 'NVARCHAR', 'SMALLINT', 'TEXT', 'TIME', 'TIMESTAMP',
-            'UNIQUEIDENTIFIER', 'VARCHAR', 'XML'
-        ]);
 
         let cls = '';
         if (/^--/.test(token)) cls = 'sql-syn-comment';
         else if (/^'(?:''|[^'])*'$/.test(token)) cls = 'sql-syn-string';
         else if (/^\d+(?:\.\d+)?$/.test(token)) cls = 'sql-syn-number';
-        else if (keywordSet.has(upper)) cls = 'sql-syn-keyword';
-        else if (typeSet.has(upper)) cls = 'sql-syn-type';
+        else if (SQL_KEYWORD_SET.has(upper)) cls = 'sql-syn-keyword';
+        else if (SQL_TYPE_SET.has(upper)) cls = 'sql-syn-type';
         else if (/^[A-Za-z_][\w$#@]*$/.test(token) && nextToken === '(') cls = 'sql-syn-function';
         else if (/^[(),.;=*+\-/<>!]+$/.test(token)) cls = 'sql-syn-operator';
 
@@ -447,6 +528,13 @@
             const code = renderSqlLine(line, terms) || '&nbsp;';
             return `<div class="sql-code-line"><span class="sql-line-no">${lineNo}</span><span class="sql-line-code">${code}</span></div>`;
         }).join('');
+    }
+
+    function renderIndexedSqlQuery(item, terms) {
+        if (terms.length) return renderSqlQuery(item.query, terms);
+        const record = getHistorySearchRecord(item);
+        if (!record.renderedSql) record.renderedSql = renderSqlQuery(item.query, []);
+        return record.renderedSql;
     }
 
     function loadRecentSearches() {
@@ -723,9 +811,13 @@
     }
 
     function loadHistory() {
+        if (historyCache) return historyCache;
         const parsed = StorageService.getJson(HISTORY_STORAGE_KEY, []);
-        if (!Array.isArray(parsed)) return [];
-        return parsed.map(normalizeItem).filter(Boolean);
+        historyCache = Array.isArray(parsed)
+            ? parsed.map(normalizeItem).filter(Boolean)
+            : [];
+        rebuildHistorySearchIndex(historyCache);
+        return historyCache;
     }
 
     function saveHistory(history) {
@@ -736,7 +828,10 @@
                 .sort((a, b) => new Date(b.lastUsedAt) - new Date(a.lastUsedAt))
                 .slice(0, getHistoryMaxItems());
 
-            StorageService.setJson(HISTORY_STORAGE_KEY, cleaned, 'historico');
+            if (StorageService.setJson(HISTORY_STORAGE_KEY, cleaned, 'historico')) {
+                historyCache = cleaned;
+                rebuildHistorySearchIndex(historyCache);
+            }
         } catch (e) {
             console.error('[SQL Helper] Erro ao salvar histórico:', e);
         }
@@ -744,23 +839,15 @@
 
     function getFilteredHistory() {
         const history = loadHistory();
-        const search = (state.searchInput?.value || '').trim().toLowerCase();
+        const rawSearch = (state.searchInput?.value || '').trim();
+        const terms = rawSearch ? parseSearchTerms(rawSearch) : [];
         const onlyFavorites = !!state.favoritesOnlyCheckbox?.checked;
         const selectedTag = (state.tagFilterSelect?.value || '').trim();
 
         return history.filter(item => {
             if (onlyFavorites && !item.isFavorite) return false;
-            if (selectedTag && !item.tags.includes(selectedTag)) return false;
-            if (!search) return true;
-
-            const haystack = [
-                item.name || '',
-                item.query,
-                item.comment || '',
-                (item.tags || []).join(' ')
-            ].join('\n').toLowerCase();
-
-            return haystack.includes(search);
+            if (!matchesTagFilter(item, selectedTag)) return false;
+            return matchesSearchTerms(item, terms);
         });
     }
 
@@ -3320,40 +3407,17 @@
 
         const filtered = history.filter(item => {
             if (onlyFavorites && !item.isFavorite) return false;
-
-            if (selectedTag === '__with_tags__') return item.tags.length > 0;
-            if (selectedTag === '__without_tags__') return item.tags.length === 0;
-            if (selectedTag && !['__with_tags__', '__without_tags__', ''].includes(selectedTag) && !item.tags.includes(selectedTag)) return false;
-
-            if (!terms.length) return true;
-
-            return terms.every(term => {
-                if (term.type === 'from') {
-                    return normalizeForSearch(item.query).includes(term.value);
-                }
-                if (term.type === 'date') {
-                    const dates = [item.createdAt, item.lastUsedAt]
-                        .map(d => formatDate(d))
-                        .join(' ');
-                    return dates.includes(term.value);
-                }
-                const haystack = normalizeForSearch([
-                    item.name || '',
-                    item.query,
-                    item.comment || '',
-                    (item.tags || []).join(' ')
-                ].join('\n'));
-                return haystack.includes(term.value);
-            });
+            if (!matchesTagFilter(item, selectedTag)) return false;
+            return matchesSearchTerms(item, terms);
         });
 
         const sortFns = {
-            lastUsed_desc:  (a, b) => new Date(b.lastUsedAt)  - new Date(a.lastUsedAt),
-            lastUsed_asc:   (a, b) => new Date(a.lastUsedAt)  - new Date(b.lastUsedAt),
-            created_desc:   (a, b) => new Date(b.createdAt)   - new Date(a.createdAt),
-            created_asc:    (a, b) => new Date(a.createdAt)   - new Date(b.createdAt),
-            tag_asc:        (a, b) => (a.tags[0] || '\uFFFF').localeCompare(b.tags[0] || '\uFFFF', 'pt-BR', { sensitivity: 'base' }),
-            tag_desc:       (a, b) => (b.tags[0] || '').localeCompare(a.tags[0] || '', 'pt-BR', { sensitivity: 'base' }),
+            lastUsed_desc:  (a, b) => getHistorySearchRecord(b).lastUsedTime - getHistorySearchRecord(a).lastUsedTime,
+            lastUsed_asc:   (a, b) => getHistorySearchRecord(a).lastUsedTime - getHistorySearchRecord(b).lastUsedTime,
+            created_desc:   (a, b) => getHistorySearchRecord(b).createdTime - getHistorySearchRecord(a).createdTime,
+            created_asc:    (a, b) => getHistorySearchRecord(a).createdTime - getHistorySearchRecord(b).createdTime,
+            tag_asc:        (a, b) => (getHistorySearchRecord(a).firstTag || '\uFFFF').localeCompare(getHistorySearchRecord(b).firstTag || '\uFFFF', 'pt-BR', { sensitivity: 'base' }),
+            tag_desc:       (a, b) => (getHistorySearchRecord(b).firstTag || '').localeCompare(getHistorySearchRecord(a).firstTag || '', 'pt-BR', { sensitivity: 'base' }),
             runCount_desc:  (a, b) => (b.runCount || 0) - (a.runCount || 0)
         };
         filtered.sort(sortFns[sortValue] || sortFns.lastUsed_desc);
@@ -3395,6 +3459,7 @@
         }
 
         state.listContainer.innerHTML = '';
+        const listFragment = document.createDocumentFragment();
 
         if (!filtered.length) {
             const empty = document.createElement('div');
@@ -3404,7 +3469,7 @@
             empty.textContent = isFiltered
                 ? 'Nenhuma query encontrada com os filtros aplicados.'
                 : 'Nenhuma query no histórico.';
-            state.listContainer.appendChild(empty);
+            listFragment.appendChild(empty);
         }
 
         visibleItems.forEach(item => {
@@ -3489,7 +3554,7 @@
             querySection.className = 'sql-card-query';
 
             const queryPre = document.createElement('pre');
-            queryPre.innerHTML = renderSqlQuery(item.query, terms);
+            queryPre.innerHTML = renderIndexedSqlQuery(item, terms);
 
             const showMoreBtn = document.createElement('button');
             showMoreBtn.className = 'sql-show-more';
@@ -3642,15 +3707,17 @@
             actions.append(btnPaste, btnRun, btnCopy, btnDelete);
             body.append(querySection, metaRow, commentExpanded, actions);
             card.append(header, body);
-            state.listContainer.appendChild(card);
+            listFragment.appendChild(card);
         });
 
         if (filtered.length > visibleItems.length) {
             const limitNote = document.createElement('div');
             limitNote.className = 'sql-helper-render-limit';
             limitNote.textContent = `Mostrando ${visibleItems.length} de ${filtered.length}. Use busca/filtros para refinar.`;
-            state.listContainer.appendChild(limitNote);
+            listFragment.appendChild(limitNote);
         }
+
+        state.listContainer.appendChild(listFragment);
 
         if (state.footerInfo) {
             const filteredInfo = (rawSearch || onlyFavorites || selectedTag) ? ` • visíveis: ${filtered.length}` : '';
@@ -3753,7 +3820,7 @@
             renderHistoryList();
             const val = searchInput.value.trim();
             if (val.length >= 3) saveRecentSearch(val);
-        }, 280);
+        }, 140);
 
         searchInput.addEventListener('input', () => {
             const val = searchInput.value;
@@ -3987,6 +4054,14 @@
         });
     }
 
+    function setupHistoryStorageSync() {
+        window.addEventListener('storage', event => {
+            if (event.key !== HISTORY_STORAGE_KEY) return;
+            invalidateHistoryCache();
+            renderHistoryList();
+        });
+    }
+
     /********************************************************************
      * INIT
      ********************************************************************/
@@ -3995,6 +4070,7 @@
         createUI();
         setupKeyListener();
         setupRunButtonHook();
+        setupHistoryStorageSync();
         console.log('[SQL Helper – Histórico v13] Inicializado.');
     }
 

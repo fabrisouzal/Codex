@@ -9,7 +9,7 @@ Instale cada script pelo link abaixo. Depois da primeira instalação, o Tamperm
 | Script | Versão vigente | Instalação/atualização |
 | --- | --- | --- |
 | Editor de Query | 2026-06-16.01 | https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/editor-de-query.user.js |
-| Histórico SQL | 2026-06-16.01 | https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/historico-sql.user.js |
+| Histórico SQL | 2026-06-18.01 | https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/historico-sql.user.js |
 | Resultado Personalizado | 2026-06-17.01 | https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/resultado-personalizado.user.js |
 | ATTUS - Definir Tennant PGESP | 2026-06-04.01 | https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/definir-tennant-pgesp.user.js |
 | Exportar Transcrição Teams SharePoint | 2026-06-08.02 | https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/exportar-transcricao-teams-sharepoint.user.js |
