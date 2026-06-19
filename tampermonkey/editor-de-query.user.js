@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Editor de Query
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-18.02
+// @version      2026-06-19.01
 // @description  Editor SQL Pro. Accordion para ocultar/mostrar query + Export .sql + temas + painel de configurações.
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -65,6 +65,8 @@
     ribbonIcons:   "tm:ribbon:iconsVisible_v1:"         + KEY_BASE,
     ribbonItems:   "tm:ribbon:itemsVisible_v1:"         + KEY_BASE,
     execDraft:     "tm:queryEditor:execDraft_v1:"       + KEY_BASE,
+    customSnippets:"tm:queryEditor:customSnippets_v1:"  + KEY_BASE,
+    snippetFavorites:"tm:queryEditor:snippetFavorites_v1:" + KEY_BASE,
     schemaVersion: "tm:queryEditor:schemaVersion_v1:"    + KEY_BASE
   };
 
@@ -181,6 +183,10 @@
     // Painel de configurações
     settingsOverlayEl:  null,
     settingsWindowEl:   null,
+    snippetsOverlayEl:  null,
+    snippetStops:       [],
+    snippetStopIndex:   -1,
+    snippetEndMark:     null,
     // Restauração de seleção após execução parcial
     restoreAfterExec:   null,
     execOverrideText:   null,
@@ -368,6 +374,7 @@
     { key: "clear",         label: "Limpar editor" },
     { key: "importSql",     label: "Importar .sql" },
     { key: "exportSql",     label: "Exportar .sql" },
+    { key: "snippets",      label: "Snippets SQL" },
     { key: "lint",          label: "Lint" },
     { key: "theme",         label: "Tema" },
     { key: "settings",      label: "Config na ribbon" }
@@ -417,6 +424,43 @@
       group.style.display = visible ? "" : "none";
     });
   }
+
+
+  // ===================================================================
+  // SNIPPETS SQL
+  // ===================================================================
+  var NATIVE_SNIPPETS = [
+    ["SELECT b\u00e1sico","Consultas","SELECT\n    ${COLUNAS:*}\nFROM ${TABELA}\nWHERE ${CONDICAO:1 = 1}${CURSOR}"],
+    ["SELECT DISTINCT","Consultas","SELECT DISTINCT\n    ${COLUNAS:*}\nFROM ${TABELA}\nWHERE ${CONDICAO:1 = 1}${CURSOR}"],
+    ["CTE / WITH","Consultas","WITH ${CTE:base} AS (SELECT ${COLUNAS:*} FROM ${TABELA})\nSELECT * FROM ${CTE_USO:base}${CURSOR}"],
+    ["INNER JOIN","Jun\u00e7\u00f5es","SELECT ${COLUNAS:a.*, b.*}\nFROM ${TABELA_A} a\nINNER JOIN ${TABELA_B} b ON b.${CHAVE_B} = a.${CHAVE_A}${CURSOR}"],
+    ["LEFT JOIN","Jun\u00e7\u00f5es","SELECT ${COLUNAS:a.*, b.*}\nFROM ${TABELA_A} a\nLEFT JOIN ${TABELA_B} b ON b.${CHAVE_B} = a.${CHAVE_A}${CURSOR}"],
+    ["Filtro IN","Filtros","${SELECAO:WHERE} ${COLUNA} IN (${VALORES:1, 2, 3})${CURSOR}"],
+    ["Filtro BETWEEN","Filtros","${SELECAO:WHERE} ${COLUNA} BETWEEN ${INICIO} AND ${FIM}${CURSOR}"],
+    ["Filtro EXISTS","Filtros","${SELECAO:WHERE} EXISTS (SELECT 1 FROM ${TABELA} WHERE ${CONDICAO})${CURSOR}"],
+    ["GROUP BY / HAVING","Agrupamento","SELECT ${COLUNA}, COUNT(*) quantidade\nFROM ${TABELA}\nGROUP BY ${COLUNA}\nHAVING COUNT(*) > ${VALOR:1}${CURSOR}"],
+    ["INSERT","Manipula\u00e7\u00e3o","INSERT INTO ${TABELA} (${COLUNAS}) VALUES (${VALORES})${CURSOR}"],
+    ["UPDATE seguro","Manipula\u00e7\u00e3o","UPDATE ${TABELA}\nSET ${COLUNA} = ${VALOR}\nWHERE ${CONDICAO_CHAVE}${CURSOR}"],
+    ["DELETE seguro","Manipula\u00e7\u00e3o","DELETE FROM ${TABELA}\nWHERE ${CONDICAO_CHAVE}${CURSOR}"],
+    ["MERGE","Manipula\u00e7\u00e3o","MERGE INTO ${DESTINO} d USING ${ORIGEM} o ON (d.${CHAVE}=o.${CHAVE})\nWHEN MATCHED THEN UPDATE SET d.${COLUNA}=o.${COLUNA}${CURSOR}"],
+    ["Localizar duplicidades","Diagn\u00f3stico","SELECT ${COLUNA}, COUNT(*) quantidade FROM ${TABELA} GROUP BY ${COLUNA} HAVING COUNT(*) > 1${CURSOR}"],
+    ["Contar valores nulos","Diagn\u00f3stico","SELECT COUNT(*) quantidade_nulos FROM ${TABELA} WHERE ${COLUNA} IS NULL${CURSOR}"]
+  ].map(function(x,i){return{id:"native_"+i,name:x[0],category:x[1],body:x[2],native:true};});
+  function customSnippets(){var x=storage.getJson(KEYS.customSnippets);return Array.isArray(x)?x:[];}
+  function favorites(){var x=storage.getJson(KEYS.snippetFavorites);return Array.isArray(x)?x:[];}
+  function allSnippets(){return NATIVE_SNIPPETS.concat(customSnippets());}
+  function clearSnippetStops(){state.snippetStops.forEach(function(x){try{x.clear();}catch(_){}});state.snippetStops=[];state.snippetStopIndex=-1;if(state.snippetEndMark){try{state.snippetEndMark.clear();}catch(_){}state.snippetEndMark=null;}}
+  function parseSnippet(body,selection){var out="",stops=[],end=null,last=0,re=/\$\{([A-Z0-9_]+)(?::([^}]*))?\}/gi,m;while((m=re.exec(body))){out+=body.slice(last,m.index);var n=m[1].toUpperCase(),v=m[2]!==undefined?m[2]:n;if(n==="SELECAO")v=selection||v;if(n==="CURSOR"){end=out.length;v="";}var a=out.length;out+=v;if(n!=="CURSOR"&&v)stops.push([a,out.length]);last=re.lastIndex;}out+=body.slice(last);return{text:out,stops:stops,end:end===null?out.length:end};}
+  function selectSnippetStop(i){if(!state.snippetStops.length)return false;i=Math.max(0,Math.min(i,state.snippetStops.length-1));var f=state.snippetStops[i].find();if(!f)return false;state.snippetStopIndex=i;state.sqlEditor.getDoc().setSelection(f.from,f.to);return true;}
+  function snippetTab(cm,back){if(!state.snippetStops.length)return CodeMirror.Pass;var n=state.snippetStopIndex+(back?-1:1);if(n<0)n=0;if(n>=state.snippetStops.length){var p=state.snippetEndMark&&state.snippetEndMark.find();clearSnippetStops();if(p)cm.getDoc().setCursor(p);return;}selectSnippetStop(n);}
+  function insertSnippet(x){clearSnippetStops();var d=state.sqlEditor.getDoc(),f=d.getCursor("from"),t=d.getCursor("to"),r=parseSnippet(x.body,d.getSelection()),base=d.indexFromPos(f);state.sqlEditor.operation(function(){d.replaceRange(r.text,f,t,"+snippet");r.stops.forEach(function(q){state.snippetStops.push(d.markText(d.posFromIndex(base+q[0]),d.posFromIndex(base+q[1]),{className:"sql-snippet-placeholder",inclusiveLeft:true,inclusiveRight:true}));});state.snippetEndMark=d.setBookmark(d.posFromIndex(base+r.end));});closeSnippets();if(!selectSnippetStop(0)){var p=state.snippetEndMark.find();clearSnippetStops();if(p)d.setCursor(p);}state.sqlEditor.focus();}
+  function editSnippet(x){var sel=state.sqlEditor.getDoc().getSelection(),name=prompt("Nome do snippet:",x?x.name:"");if(name===null||!name.trim())return;var cat=prompt("Categoria:",x?x.category:"Personalizados");if(cat===null)return;var body=prompt("C\u00f3digo SQL (use ${CAMPO:valor}):",x?x.body:(sel||"SELECT * FROM ${TABELA}${CURSOR}"));if(body===null||!body.trim())return;var list=customSnippets(),item={id:x?x.id:"custom_"+Date.now(),name:name.trim(),category:cat.trim()||"Personalizados",body:body,native:false},i=list.findIndex(function(a){return a.id===item.id;});if(i>=0)list[i]=item;else list.push(item);storage.setJson(KEYS.customSnippets,list);openSnippets();}
+  function deleteSnippet(x){if(confirm("Excluir '"+x.name+"'?")){storage.setJson(KEYS.customSnippets,customSnippets().filter(function(a){return a.id!==x.id;}));openSnippets();}}
+  function toggleFavorite(id){var x=favorites(),i=x.indexOf(id);if(i>=0)x.splice(i,1);else x.push(id);storage.setJson(KEYS.snippetFavorites,x);openSnippets();}
+  function exportSnippets(){var b=new Blob([JSON.stringify({snippets:customSnippets(),favorites:favorites()},null,2)],{type:"application/json"}),u=URL.createObjectURL(b),a=document.createElement("a");a.href=u;a.download="editor-query-snippets.json";a.click();URL.revokeObjectURL(u);}
+  function importSnippets(file){if(!file)return;var r=new FileReader();r.onload=function(){try{var j=JSON.parse(r.result),x=Array.isArray(j)?j:j.snippets;if(!Array.isArray(x))throw 0;storage.setJson(KEYS.customSnippets,x.map(function(a,i){return{id:"custom_"+Date.now()+"_"+i,name:String(a.name||"Snippet"),category:String(a.category||"Personalizados"),body:String(a.body||""),native:false};}).filter(function(a){return a.body;}));openSnippets();}catch(_){alert("JSON inv\u00e1lido.");}};r.readAsText(file,"UTF-8");}
+  function closeSnippets(){if(state.snippetsOverlayEl)state.snippetsOverlayEl.remove();state.snippetsOverlayEl=null;}
+  function openSnippets(){closeSnippets();var ov=document.createElement("div");ov.className="tm-modal-ov";var w=document.createElement("div");w.className="tm-snippets-win";var h=document.createElement("div");h.className="tm-snippets-head";h.innerHTML="<strong>Snippets SQL</strong>";var acts=document.createElement("div"),search=document.createElement("input"),cat=document.createElement("select"),fav=document.createElement("input"),list=document.createElement("div"),file=document.createElement("input");search.type="search";search.placeholder="Buscar";fav.type="checkbox";file.type="file";file.accept=".json";file.style.display="none";list.className="tm-snippets-list";function btn(t,fn){var b=document.createElement("button");b.type="button";b.textContent=t;b.onclick=fn;return b;}file.onchange=function(){importSnippets(file.files[0]);};acts.append(btn("Novo",function(){editSnippet(null);}));acts.append(btn("Importar",function(){file.click();}));acts.append(btn("Exportar",exportSnippets));acts.append(btn("Fechar",closeSnippets));acts.append(file);h.append(acts);var tools=document.createElement("div");tools.className="tm-snippets-tools";var fl=document.createElement("label");fl.append(fav,document.createTextNode(" Favoritos"));tools.append(search,cat,fl);function render(){var all=allSnippets(),fs=favorites(),cs=["Todas"];all.forEach(function(x){if(cs.indexOf(x.category)<0)cs.push(x.category);});var old=cat.value||"Todas";cat.innerHTML="";cs.forEach(function(x){var o=document.createElement("option");o.value=x;o.textContent=x;cat.append(o);});cat.value=cs.indexOf(old)>=0?old:"Todas";list.innerHTML="";var q=search.value.toLowerCase();all.filter(function(x){return(cat.value==="Todas"||x.category===cat.value)&&(!fav.checked||fs.indexOf(x.id)>=0)&&(!q||(x.name+x.category+x.body).toLowerCase().indexOf(q)>=0);}).forEach(function(x){var c=document.createElement("article"),pre=document.createElement("pre"),bar=document.createElement("div"),title=document.createElement("strong");c.className="tm-snippet-card";title.textContent=x.name+" - "+x.category;pre.textContent=x.body;bar.append(btn(fs.indexOf(x.id)>=0?"?":"?",function(){toggleFavorite(x.id);}));bar.append(btn(state.sqlEditor.getDoc().somethingSelected()?"Substituir sele\u00e7\u00e3o":"Inserir",function(){insertSnippet(x);}));if(!x.native){bar.append(btn("Editar",function(){editSnippet(x);}));bar.append(btn("Excluir",function(){deleteSnippet(x);}));}c.append(title,pre,bar);list.append(c);});}search.oninput=render;cat.onchange=render;fav.onchange=render;ov.onmousedown=function(e){if(e.target===ov)closeSnippets();};w.append(h,tools,list);ov.append(w);var form=PageAdapter.getTextarea().closest("form");(form||document.body).append(ov);state.snippetsOverlayEl=ov;render();search.focus();}
 
   // ===================================================================
   // EXPORTAR .SQL
@@ -548,6 +592,7 @@
       ".tm-modal-bd .sql-editor-container-pro .CodeMirror{flex:1;min-height:180px;width:100% !important;height:auto !important;}",
       ".tm-modal-bd .sql-editor-container-pro .CodeMirror-scroll{min-height:0;}",
       /* Painel de configurações */
+      ".tm-snippets-win{width:min(1000px,94vw);height:min(740px,88vh);background:#f8fbff;border-radius:8px;display:flex;flex-direction:column;overflow:hidden;}.tm-snippets-head{display:flex;justify-content:space-between;padding:10px;background:#eaf1f9;}.tm-snippets-head>div{display:flex;gap:5px;}.tm-snippets-tools{display:grid;grid-template-columns:1fr 200px auto;gap:8px;padding:9px;background:#fff;}.tm-snippets-list{padding:10px;overflow:auto;display:grid;grid-template-columns:repeat(2,minmax(280px,1fr));gap:8px;}.tm-snippet-card{background:#fff;border:1px solid #d6e0eb;border-radius:6px;padding:8px;display:grid;gap:6px;}.tm-snippet-card pre{margin:0;max-height:130px;overflow:auto;background:#f7f9fc;padding:6px;font:11px Consolas,monospace;}.tm-snippet-card>div{display:flex;justify-content:flex-end;gap:5px;}.sql-snippet-placeholder{background:#fff2a8;border-bottom:1px solid #d19a00;}@media(max-width:760px){.tm-snippets-list{grid-template-columns:1fr}.tm-snippets-tools{grid-template-columns:1fr}}",
       ".tm-settings-win{width:min(920px,94vw);max-height:88vh;background:#fff;border-radius:10px;box-shadow:0 12px 44px rgba(0,0,0,.32);overflow:hidden;display:flex;flex-direction:column;color:#1f2937;}",
       ".tm-settings-hd{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;background:linear-gradient(#f7fbff,#eaf1f9);border-bottom:1px solid #cfdbe8;}",
       ".tm-settings-hd .ttl{font-size:13px;font-weight:800;color:#20385f;}",
@@ -877,6 +922,8 @@
       { value: 15, label: "15 segundos" }, { value: 30, label: "30 segundos" },
       { value: 60, label: "60 segundos" }, { value: 120, label: "120 segundos" }
     ], getExecWarnThresholdSeconds());
+    btnSnippets.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); openSnippets(); }, true);
+
     warnSelect.addEventListener("change", function () {
       storage.set(KEYS.execWarn, warnSelect.value);
       syncRibbonControls();
@@ -1198,6 +1245,7 @@
       lint:      "<svg viewBox='0 0 16 16' aria-hidden='true'><path d='M8 2.5l5.5 9.5h-11z'></path><path d='M8 6v3M8 11.5h.01'></path></svg>",
       import:    "<svg viewBox='0 0 16 16' aria-hidden='true'><path d='M4 2.5h5l3 3v8H4z'></path><path d='M9 2.5v3h3M8 11V7M6.5 8.5L8 7l1.5 1.5M6 11h4'></path></svg>",
       export:    "<svg viewBox='0 0 16 16' aria-hidden='true'><path d='M4 2.5h5l3 3v8H4z'></path><path d='M9 2.5v3h3M6 10.5h4M8 7v4M6.5 9.5L8 11l1.5-1.5'></path></svg>",
+      snippets:  "<svg viewBox='0 0 16 16'><path d='M3 3h10v3H3zM3 8h10v5H3z'></path></svg>",
       settings:  "<svg viewBox='0 0 16 16' aria-hidden='true'><path d='M8 5.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z'></path><path d='M8 2.5v1.3M8 12.2v1.3M3.2 5.2l1.1.7M11.7 10.1l1.1.7M3.2 10.8l1.1-.7M11.7 5.9l1.1-.7'></path></svg>",
       copy:      "<svg viewBox='0 0 16 16' aria-hidden='true'><rect x='5' y='4' width='8' height='9' rx='1'></rect><path d='M3 11V3.5A1.5 1.5 0 0 1 4.5 2H10'></path></svg>"
     };
@@ -1761,6 +1809,7 @@
     var btnToggleLint  = createInputButton(state.lintEnabled ? "Lint: ON" : "Lint: OFF", "lint");
     var btnImportSql   = createInputButton("Importar .sql", "import");
     var btnExportSql   = createInputButton("Exportar .sql", "export");
+    var btnSnippets    = createInputButton("Snippets", "snippets");
     var btnAutoCollapse = createInputButton(getAutoCollapseQueryAfterExec() ? "Ocultar: ON" : "Ocultar: OFF", "block");
     var btnSettings    = createInputButton("Config", "settings");
     state.btnRibbonLint = btnToggleLint;
@@ -1801,6 +1850,7 @@
       clear: btnClear,
       importSql: btnImportSql,
       exportSql: btnExportSql,
+      snippets: btnSnippets,
       lint: btnToggleLint,
       theme: themeSelect,
       settings: btnSettings
@@ -1809,7 +1859,7 @@
     [
       createRibbonGroup("Executar", [btnExec, btnExecSel, btnSelectBlock]),
       createRibbonGroup("Timer", [warnSelect, fallbackSelect, btnAutoCollapse]),
-      createRibbonGroup("Editar", [btnClear, btnImportSql, btnExportSql]),
+      createRibbonGroup("Editar", [btnClear, btnImportSql, btnExportSql, btnSnippets]),
       createRibbonGroup("Revisão", [btnToggleLint]),
       createRibbonGroup("Tema", [themeSelect]),
       createRibbonGroup("Config", [btnSettings])
@@ -1953,7 +2003,10 @@
       theme:             def.cm || "default",
       extraKeys: {
         "Ctrl-Enter": triggerExecuteButton,
-        "Ctrl-S":     function (cm) { try { cm.save(); } catch (_) {} }
+        "Ctrl-S":     function (cm) { try { cm.save(); } catch (_) {} },
+        "Ctrl-Alt-S": function () { openSnippets(); },
+        "Tab":        function (cm) { return snippetTab(cm, false); },
+        "Shift-Tab":  function (cm) { return snippetTab(cm, true); }
       }
     });
 

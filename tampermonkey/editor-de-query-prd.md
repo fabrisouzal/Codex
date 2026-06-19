@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Editor de Query.user.js`
 
 Arquivo publicado: `tampermonkey/editor-de-query.user.js`
 
-Versao do script: `2026-06-18.02`
+Versao do script: `2026-06-19.01`
 
-Versao do documento: `2026-06-18.02`
+Versao do documento: `2026-06-19.01`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/editor-de-query.user.js`
@@ -274,6 +274,22 @@ Dependencias externas:
 
 O carregador dinamico permanece como fallback quando o CodeMirror nao estiver disponivel no momento da inicializacao.
 
+### 7.16 Menu de Snippets SQL (novo)
+
+O editor possui uma biblioteca de trechos SQL reutilizaveis, acessivel pela ribbon ou pelo atalho `Ctrl+Alt+S`.
+
+Funcionalidades existentes:
+
+- Busca e filtro por categoria.
+- Quinze snippets SQL nativos.
+- Insercao no cursor ou substituicao da selecao.
+- Placeholders `${NOME}` e `${NOME:valor}`.
+- Navegacao com `Tab` e `Shift+Tab`.
+- Placeholders especiais `${SELECAO}` e `${CURSOR}`.
+- Favoritos persistentes.
+- Cadastro, edicao e exclusao de snippets personalizados.
+- Exportacao e importacao em JSON.
+
 ## 8. Persistencia e Estado
 
 O script usa `localStorage` com chaves separadas por host, caminho e query string.
@@ -292,6 +308,8 @@ Estados persistidos:
 - Visibilidade de icones.
 - Visibilidade de itens da ribbon.
 - Versao de schema de configuracoes.
+- Snippets personalizados.
+- Favoritos de snippets.
 
 ## 9. Requisitos Nao Funcionais
 
