@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Editor de Query
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-19.01
+// @version      2026-06-19.02
 // @description  Editor SQL Pro. Accordion para ocultar/mostrar query + Export .sql + temas + painel de configurações.
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -922,8 +922,6 @@
       { value: 15, label: "15 segundos" }, { value: 30, label: "30 segundos" },
       { value: 60, label: "60 segundos" }, { value: 120, label: "120 segundos" }
     ], getExecWarnThresholdSeconds());
-    btnSnippets.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); openSnippets(); }, true);
-
     warnSelect.addEventListener("change", function () {
       storage.set(KEYS.execWarn, warnSelect.value);
       syncRibbonControls();
@@ -1936,6 +1934,11 @@
     btnExportSql.addEventListener("click", function (e) {
       e.preventDefault(); e.stopPropagation();
       exportQueryAsSql();
+    }, true);
+
+    btnSnippets.addEventListener("click", function (e) {
+      e.preventDefault(); e.stopPropagation();
+      openSnippets();
     }, true);
 
     warnSelect.addEventListener("change", function () {
