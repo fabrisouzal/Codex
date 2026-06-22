@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Editor de Query.user.js`
 
 Arquivo publicado: `tampermonkey/editor-de-query.user.js`
 
-Versao do script: `2026-06-22.04`
+Versao do script: `2026-06-22.05`
 
-Versao do documento: `2026-06-22.04`
+Versao do documento: `2026-06-22.05`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/editor-de-query.user.js`
@@ -299,6 +299,9 @@ Funcionalidades existentes:
 - Configuracao de densidade, quantidade de colunas, linhas da previa, descricao e tags dos cards (novo).
 - Acao para limpar todos os snippets e favoritos, com confirmacao (novo).
 - Acao para restaurar os 39 snippets padrao ATTUS N2 (novo).
+- Editor JSON integrado, com formatacao, validacao e gravacao da biblioteca e dos favoritos (novo).
+- Categorias fixas baseadas no catalogo ATTUS N2, aplicadas ao cadastro, edicao, importacao e edicao JSON (novo).
+- Campo de categoria em formato dropdown no cadastro e na edicao de snippets (novo).
 - Exportacao e importacao em JSON.
 
 ## 8. Persistencia e Estado

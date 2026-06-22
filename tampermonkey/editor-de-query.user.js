@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Editor de Query
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-22.04
+// @version      2026-06-22.05
 // @description  Editor SQL Pro. Accordion para ocultar/mostrar query + Export .sql + temas + painel de configurações.
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -187,6 +187,7 @@
     settingsWindowEl:   null,
     snippetsOverlayEl:  null,
     snippetEditorOverlayEl: null,
+    snippetJsonOverlayEl: null,
     snippetStops:       [],
     snippetStopIndex:   -1,
     snippetEndMark:     null,
@@ -953,17 +954,36 @@
       "native": false
     }
   ];
+  var SNIPPET_CATEGORIES = [
+    "01 - Processo e pasta",
+    "02 - Distribuição",
+    "03 - Demanda e Camunda",
+    "04 - Usuário, lotação e regras",
+    "05 - Andamento, documento e BPMN",
+    "06 - Publicação e Integrajud",
+    "07 - Protocolo e tribunal",
+    "08 - Dívida ativa e SDA",
+    "09 - Parâmetros e configuração",
+    "10 - Auditoria",
+    "11 - Classes e assuntos",
+    "99 - Diagnóstico rápido"
+  ];
 
   function cloneSnippet(snippet) {
     return {
       id: String(snippet.id),
       name: String(snippet.name || "Snippet"),
-      category: String(snippet.category || "Personalizados"),
+      category: normalizeSnippetCategory(snippet.category),
       description: String(snippet.description || ""),
       tags: Array.isArray(snippet.tags) ? snippet.tags.slice(0, 12) : [],
       body: String(snippet.body || ""),
       native: false
     };
+  }
+
+  function normalizeSnippetCategory(category) {
+    category = String(category || "");
+    return SNIPPET_CATEGORIES.indexOf(category) >= 0 ? category : SNIPPET_CATEGORIES[0];
   }
 
   function ensureDefaultSnippets() {
@@ -995,7 +1015,22 @@
     storage.set(KEYS.snippetDefaultsVersion, String(DEFAULT_SNIPPETS_VERSION));
   }
 
-  function customSnippets(){ensureDefaultSnippets();var x=storage.getJson(KEYS.customSnippets);return Array.isArray(x)?x:[];}
+  function customSnippets(){
+    ensureDefaultSnippets();
+    var saved=storage.getJson(KEYS.customSnippets);
+    if(!Array.isArray(saved))return[];
+    var changed=false;
+    var normalized=saved.map(function(snippet){
+      var category=normalizeSnippetCategory(snippet&&snippet.category);
+      if(snippet&&snippet.category===category)return snippet;
+      changed=true;
+      var copy=Object.assign({},snippet||{});
+      copy.category=category;
+      return copy;
+    });
+    if(changed)storage.setJson(KEYS.customSnippets,normalized);
+    return normalized;
+  }
   function favorites(){ensureDefaultSnippets();var x=storage.getJson(KEYS.snippetFavorites);return Array.isArray(x)?x:[];}
   function allSnippets(){return customSnippets();}
   function getSnippetCardSettings() {
@@ -1043,6 +1078,131 @@
     state.snippetEditorOverlayEl = null;
   }
 
+  function normalizeSnippetCollection(value) {
+    var source = Array.isArray(value) ? value : value && value.snippets;
+    if (!Array.isArray(source)) throw new Error("A propriedade 'snippets' deve ser uma lista.");
+    var ids = Object.create(null);
+    var snippets = source.map(function (snippet, index) {
+      if (!snippet || typeof snippet !== "object") throw new Error("Snippet " + (index + 1) + " inválido.");
+      var normalized = cloneSnippet({
+        id: snippet.id || "custom_" + Date.now() + "_" + index,
+        name: snippet.name,
+        category: snippet.category,
+        description: snippet.description,
+        tags: snippet.tags,
+        body: snippet.body
+      });
+      if (!normalized.name.trim()) throw new Error("Snippet " + (index + 1) + " sem nome.");
+      if (!normalized.body.trim()) throw new Error("Snippet '" + normalized.name + "' sem código SQL.");
+      if (ids[normalized.id]) throw new Error("ID duplicado: " + normalized.id);
+      if (SNIPPET_CATEGORIES.indexOf(String(snippet.category || "")) < 0) {
+        throw new Error("Categoria inválida em '" + normalized.name + "'. Use uma das categorias fixas.");
+      }
+      ids[normalized.id] = true;
+      return normalized;
+    });
+    var requestedFavorites = !Array.isArray(value) && Array.isArray(value.favorites) ? value.favorites : [];
+    var normalizedFavorites = requestedFavorites.filter(function (id, index, list) {
+      return ids[id] && list.indexOf(id) === index;
+    });
+    return { snippets: snippets, favorites: normalizedFavorites };
+  }
+
+  function closeSnippetJsonEditor() {
+    if (state.snippetJsonOverlayEl) state.snippetJsonOverlayEl.remove();
+    state.snippetJsonOverlayEl = null;
+  }
+
+  function openSnippetJsonEditor() {
+    closeSnippetJsonEditor();
+    var overlay = document.createElement("div");
+    overlay.className = "tm-modal-ov tm-snippet-json-overlay";
+    var dialog = document.createElement("div");
+    dialog.className = "tm-snippet-json-editor";
+    var header = document.createElement("div");
+    header.className = "tm-snippet-editor-head";
+    var title = document.createElement("strong");
+    title.textContent = "Editar JSON dos snippets";
+    var closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.textContent = "Fechar";
+    closeButton.addEventListener("click", closeSnippetJsonEditor, true);
+    header.appendChild(title);
+    header.appendChild(closeButton);
+
+    var body = document.createElement("div");
+    body.className = "tm-snippet-json-body";
+    var help = document.createElement("p");
+    help.textContent = "Edite snippets e favoritos. IDs devem ser únicos e a categoria precisa pertencer à lista fixa.";
+    var categoriesHelp = document.createElement("details");
+    var categoriesSummary = document.createElement("summary");
+    categoriesSummary.textContent = "Ver categorias permitidas";
+    var categoriesList = document.createElement("div");
+    categoriesList.className = "tm-snippet-json-categories";
+    categoriesList.textContent = SNIPPET_CATEGORIES.join(" | ");
+    categoriesHelp.appendChild(categoriesSummary);
+    categoriesHelp.appendChild(categoriesList);
+    var textarea = document.createElement("textarea");
+    textarea.spellcheck = false;
+    textarea.value = JSON.stringify({ snippets: customSnippets(), favorites: favorites() }, null, 2);
+    var error = document.createElement("div");
+    error.className = "tm-snippet-json-error";
+    error.hidden = true;
+    body.appendChild(help);
+    body.appendChild(categoriesHelp);
+    body.appendChild(textarea);
+    body.appendChild(error);
+
+    var footer = document.createElement("div");
+    footer.className = "tm-snippet-editor-footer";
+    var formatButton = document.createElement("button");
+    formatButton.type = "button";
+    formatButton.textContent = "Formatar JSON";
+    formatButton.addEventListener("click", function () {
+      try {
+        textarea.value = JSON.stringify(JSON.parse(textarea.value), null, 2);
+        error.hidden = true;
+      } catch (exception) {
+        error.textContent = "JSON inválido: " + exception.message;
+        error.hidden = false;
+      }
+    }, true);
+    var cancelButton = document.createElement("button");
+    cancelButton.type = "button";
+    cancelButton.textContent = "Cancelar";
+    cancelButton.addEventListener("click", closeSnippetJsonEditor, true);
+    var saveButton = document.createElement("button");
+    saveButton.type = "button";
+    saveButton.className = "primary";
+    saveButton.textContent = "Validar e salvar";
+    saveButton.addEventListener("click", function () {
+      try {
+        var normalized = normalizeSnippetCollection(JSON.parse(textarea.value));
+        storage.setJson(KEYS.customSnippets, normalized.snippets);
+        storage.setJson(KEYS.snippetFavorites, normalized.favorites);
+        closeSnippetJsonEditor();
+        openSnippets();
+        showToast("JSON dos snippets atualizado");
+      } catch (exception) {
+        error.textContent = exception.message || "JSON inválido.";
+        error.hidden = false;
+      }
+    }, true);
+    footer.appendChild(formatButton);
+    footer.appendChild(cancelButton);
+    footer.appendChild(saveButton);
+    dialog.appendChild(header);
+    dialog.appendChild(body);
+    dialog.appendChild(footer);
+    overlay.appendChild(dialog);
+    overlay.addEventListener("mousedown", function (event) {
+      if (event.target === overlay) closeSnippetJsonEditor();
+    }, true);
+    document.body.appendChild(overlay);
+    state.snippetJsonOverlayEl = overlay;
+    textarea.focus();
+  }
+
   function editSnippet(item) {
     closeSnippetEditor();
 
@@ -1079,10 +1239,14 @@
     nameInput.maxLength = 80;
     nameInput.value = item ? item.name : "";
 
-    var categoryInput = document.createElement("input");
-    categoryInput.type = "text";
-    categoryInput.maxLength = 40;
-    categoryInput.value = item ? item.category : "Personalizados";
+    var categoryInput = document.createElement("select");
+    SNIPPET_CATEGORIES.forEach(function (category) {
+      var option = document.createElement("option");
+      option.value = category;
+      option.textContent = category;
+      categoryInput.appendChild(option);
+    });
+    categoryInput.value = normalizeSnippetCategory(item && item.category);
 
     var descriptionInput = document.createElement("textarea");
     descriptionInput.className = "tm-snippet-description";
@@ -1145,7 +1309,7 @@
       var updated = {
         id: item ? item.id : "custom_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
         name: name,
-        category: categoryInput.value.trim() || "Personalizados",
+        category: normalizeSnippetCategory(categoryInput.value),
         description: descriptionInput.value.trim(),
         tags: tagsInput.value.split(",").map(function (tag) { return tag.trim(); }).filter(Boolean).slice(0, 12),
         body: body,
@@ -1191,7 +1355,7 @@
   }
   function toggleFavorite(id){setSnippetFavorite(id,favorites().indexOf(id)<0);}
   function exportSnippets(){var b=new Blob([JSON.stringify({snippets:customSnippets(),favorites:favorites()},null,2)],{type:"application/json"}),u=URL.createObjectURL(b),a=document.createElement("a");a.href=u;a.download="editor-query-snippets.json";a.click();URL.revokeObjectURL(u);}
-  function importSnippets(file){if(!file)return;var r=new FileReader();r.onload=function(){try{var j=JSON.parse(r.result),x=Array.isArray(j)?j:j.snippets;if(!Array.isArray(x))throw 0;storage.setJson(KEYS.customSnippets,x.map(function(a,i){return{id:"custom_"+Date.now()+"_"+i,name:String(a.name||"Snippet"),category:String(a.category||"Personalizados"),description:String(a.description||""),tags:Array.isArray(a.tags)?a.tags.slice(0,12):[],body:String(a.body||""),native:false};}).filter(function(a){return a.body;}));openSnippets();}catch(_){alert("JSON inv\u00e1lido.");}};r.readAsText(file,"UTF-8");}
+  function importSnippets(file){if(!file)return;var r=new FileReader();r.onload=function(){try{var normalized=normalizeSnippetCollection(JSON.parse(r.result));storage.setJson(KEYS.customSnippets,normalized.snippets);storage.setJson(KEYS.snippetFavorites,normalized.favorites);openSnippets();showToast("Snippets importados");}catch(exception){alert(exception.message||"JSON inválido.");}};r.readAsText(file,"UTF-8");}
   function closeSnippets(){if(state.snippetsOverlayEl)state.snippetsOverlayEl.remove();state.snippetsOverlayEl=null;}
   function openSnippets() {
     closeSnippets();
@@ -1312,6 +1476,7 @@
     actions.appendChild(button("Novo", function () { editSnippet(null); }));
     actions.appendChild(button("Importar", function () { fileInput.click(); }));
     actions.appendChild(button("Exportar", exportSnippets));
+    actions.appendChild(button("Editar JSON", openSnippetJsonEditor));
     actions.appendChild(button("Configurações", function () { settingsPanel.hidden = !settingsPanel.hidden; }));
     actions.appendChild(button("Fechar", closeSnippets));
     actions.appendChild(fileInput);
@@ -1330,10 +1495,7 @@
     function render() {
       var snippets = allSnippets();
       var savedFavorites = favorites();
-      var categories = ["Todas"];
-      snippets.forEach(function (snippet) {
-        if (categories.indexOf(snippet.category) < 0) categories.push(snippet.category);
-      });
+      var categories = ["Todas"].concat(SNIPPET_CATEGORIES);
       var selectedCategory = category.value || "Todas";
       category.innerHTML = "";
       categories.forEach(function (item) { category.appendChild(option(item, item)); });
@@ -1567,11 +1729,12 @@
       ".tm-snippet-editor-head button,.tm-snippet-editor-footer button{padding:5px 10px;border:1px solid #b7c5d8;border-radius:6px;background:#fff;color:#20385f;cursor:pointer;}",
       ".tm-snippet-editor-form{padding:13px 15px;overflow:auto;display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;}",
       ".tm-snippet-editor-form label{display:grid;gap:4px;font-size:12px;font-weight:700;color:#374151;}.tm-snippet-editor-form label:nth-of-type(n+3){grid-column:1/-1;}",
-      ".tm-snippet-editor-form input,.tm-snippet-editor-form textarea{width:100%;box-sizing:border-box;padding:7px;border:1px solid #b7c5d8;border-radius:6px;background:#fff;color:#20385f;font:12px Arial,sans-serif;}",
+      ".tm-snippet-editor-form input,.tm-snippet-editor-form select,.tm-snippet-editor-form textarea{width:100%;box-sizing:border-box;padding:7px;border:1px solid #b7c5d8;border-radius:6px;background:#fff;color:#20385f;font:12px Arial,sans-serif;}",
       ".tm-snippet-editor-form .tm-snippet-favorite-field{display:flex;align-items:center;gap:6px;grid-column:1/-1;}.tm-snippet-editor-form .tm-snippet-favorite-field input{width:18px;height:18px;margin:0;}",
       ".tm-snippet-editor-form textarea{resize:vertical;}.tm-snippet-description{min-height:62px;}.tm-snippet-code{min-height:260px;font-family:Consolas,monospace!important;line-height:1.4;}",
       ".tm-snippet-editor-help{grid-column:1/-1;padding:7px 9px;background:#f4f7fb;border:1px solid #dce5ef;border-radius:5px;color:#607089;font-size:11px;}",
       ".tm-snippet-editor-footer{display:flex;justify-content:flex-end;gap:7px;padding:10px 14px;border-top:1px solid #d6e0eb;background:#f8fbff;}.tm-snippet-editor-footer .primary{background:#185abd;color:#fff;border-color:#185abd;}",
+      ".tm-snippet-json-editor{width:min(980px,96vw);height:min(820px,92vh);background:#fff;border-radius:9px;box-shadow:0 14px 46px rgba(0,0,0,.38);display:flex;flex-direction:column;overflow:hidden;color:#1f2937;}.tm-snippet-json-body{min-height:0;flex:1;display:flex;flex-direction:column;gap:8px;padding:12px 14px;}.tm-snippet-json-body p{margin:0;color:#607089;font-size:12px;}.tm-snippet-json-body details{font-size:11px;color:#526176;}.tm-snippet-json-body summary{cursor:pointer;font-weight:700;color:#35547a;}.tm-snippet-json-categories{margin-top:5px;padding:7px;background:#f4f7fb;border:1px solid #dce5ef;border-radius:5px;line-height:1.45;}.tm-snippet-json-body textarea{min-height:0;flex:1;width:100%;box-sizing:border-box;resize:none;padding:10px;border:1px solid #aebed1;border-radius:6px;background:#101827;color:#dbeafe;font:12px/1.45 Consolas,monospace;tab-size:2;}.tm-snippet-json-error{padding:7px 9px;border:1px solid #e1a4a4;border-radius:5px;background:#fff3f3;color:#9f2020;font-size:12px;}.tm-snippet-json-error[hidden]{display:none;}",
       "@media(max-width:650px){.tm-snippet-editor-form{grid-template-columns:1fr;}.tm-snippet-editor-form label{grid-column:1!important;}}",
       ".tm-settings-win{width:min(920px,94vw);max-height:88vh;background:#fff;border-radius:10px;box-shadow:0 12px 44px rgba(0,0,0,.32);overflow:hidden;display:flex;flex-direction:column;color:#1f2937;}",
       ".tm-settings-hd{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;background:linear-gradient(#f7fbff,#eaf1f9);border-bottom:1px solid #cfdbe8;}",
