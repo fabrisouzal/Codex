@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Editor de Query
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-22.02
+// @version      2026-06-22.03
 // @description  Editor SQL Pro. Accordion para ocultar/mostrar query + Export .sql + temas + painel de configurações.
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -67,6 +67,7 @@
     execDraft:     "tm:queryEditor:execDraft_v1:"       + KEY_BASE,
     customSnippets:"tm:queryEditor:customSnippets_v1:"  + KEY_BASE,
     snippetFavorites:"tm:queryEditor:snippetFavorites_v1:" + KEY_BASE,
+    snippetDefaultsVersion:"tm:queryEditor:snippetDefaultsVersion_v1:" + KEY_BASE,
     schemaVersion: "tm:queryEditor:schemaVersion_v1:"    + KEY_BASE
   };
 
@@ -430,26 +431,572 @@
   // ===================================================================
   // SNIPPETS SQL
   // ===================================================================
-  var NATIVE_SNIPPETS = [
-    ["SELECT b\u00e1sico","Consultas","SELECT\n    ${COLUNAS:*}\nFROM ${TABELA}\nWHERE ${CONDICAO:1 = 1}${CURSOR}"],
-    ["SELECT DISTINCT","Consultas","SELECT DISTINCT\n    ${COLUNAS:*}\nFROM ${TABELA}\nWHERE ${CONDICAO:1 = 1}${CURSOR}"],
-    ["CTE / WITH","Consultas","WITH ${CTE:base} AS (SELECT ${COLUNAS:*} FROM ${TABELA})\nSELECT * FROM ${CTE_USO:base}${CURSOR}"],
-    ["INNER JOIN","Jun\u00e7\u00f5es","SELECT ${COLUNAS:a.*, b.*}\nFROM ${TABELA_A} a\nINNER JOIN ${TABELA_B} b ON b.${CHAVE_B} = a.${CHAVE_A}${CURSOR}"],
-    ["LEFT JOIN","Jun\u00e7\u00f5es","SELECT ${COLUNAS:a.*, b.*}\nFROM ${TABELA_A} a\nLEFT JOIN ${TABELA_B} b ON b.${CHAVE_B} = a.${CHAVE_A}${CURSOR}"],
-    ["Filtro IN","Filtros","${SELECAO:WHERE} ${COLUNA} IN (${VALORES:1, 2, 3})${CURSOR}"],
-    ["Filtro BETWEEN","Filtros","${SELECAO:WHERE} ${COLUNA} BETWEEN ${INICIO} AND ${FIM}${CURSOR}"],
-    ["Filtro EXISTS","Filtros","${SELECAO:WHERE} EXISTS (SELECT 1 FROM ${TABELA} WHERE ${CONDICAO})${CURSOR}"],
-    ["GROUP BY / HAVING","Agrupamento","SELECT ${COLUNA}, COUNT(*) quantidade\nFROM ${TABELA}\nGROUP BY ${COLUNA}\nHAVING COUNT(*) > ${VALOR:1}${CURSOR}"],
-    ["INSERT","Manipula\u00e7\u00e3o","INSERT INTO ${TABELA} (${COLUNAS}) VALUES (${VALORES})${CURSOR}"],
-    ["UPDATE seguro","Manipula\u00e7\u00e3o","UPDATE ${TABELA}\nSET ${COLUNA} = ${VALOR}\nWHERE ${CONDICAO_CHAVE}${CURSOR}"],
-    ["DELETE seguro","Manipula\u00e7\u00e3o","DELETE FROM ${TABELA}\nWHERE ${CONDICAO_CHAVE}${CURSOR}"],
-    ["MERGE","Manipula\u00e7\u00e3o","MERGE INTO ${DESTINO} d USING ${ORIGEM} o ON (d.${CHAVE}=o.${CHAVE})\nWHEN MATCHED THEN UPDATE SET d.${COLUNA}=o.${COLUNA}${CURSOR}"],
-    ["Localizar duplicidades","Diagn\u00f3stico","SELECT ${COLUNA}, COUNT(*) quantidade FROM ${TABELA} GROUP BY ${COLUNA} HAVING COUNT(*) > 1${CURSOR}"],
-    ["Contar valores nulos","Diagn\u00f3stico","SELECT COUNT(*) quantidade_nulos FROM ${TABELA} WHERE ${COLUNA} IS NULL${CURSOR}"]
-  ].map(function(x,i){return{id:"native_"+i,name:x[0],category:x[1],body:x[2],native:true};});
-  function customSnippets(){var x=storage.getJson(KEYS.customSnippets);return Array.isArray(x)?x:[];}
-  function favorites(){var x=storage.getJson(KEYS.snippetFavorites);return Array.isArray(x)?x:[];}
-  function allSnippets(){return NATIVE_SNIPPETS.concat(customSnippets());}
+  var DEFAULT_SNIPPETS_VERSION = 1;
+  var DEFAULT_SNIPPETS = [
+    {
+      "id": "custom_1782131743527_001_proc_cnj",
+      "name": "Processo por número CNJ",
+      "category": "01 - Processo e pasta",
+      "description": "Consulta dados principais do processo pelo número CNJ, incluindo pasta, classe e indicadores de tramitação.",
+      "tags": [
+        "processo",
+        "cnj",
+        "classe",
+        "diagnostico"
+      ],
+      "body": "SELECT\n    p.id AS processo_id,\n    p.numero,\n    p.pasta_id,\n    p.classe_id,\n    c.nome AS classe_nome,\n    p.eletronico_judiciario,\n    p.juizado_especial,\n    p.created_date,\n    p.created_by,\n    p.modified_date,\n    p.modified_by\nFROM att_processo.processo p\nLEFT JOIN att_processo.classe c\n    ON c.id = p.classe_id\nWHERE p.numero = :numero_processo -- ex: '2099666-32.2026.8.26.0000'",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_002_pasta_nu",
+      "name": "Pasta por número administrativo",
+      "category": "01 - Processo e pasta",
+      "description": "Localiza a pasta pelo número administrativo.",
+      "tags": [
+        "pasta",
+        "numero",
+        "diagnostico"
+      ],
+      "body": "SELECT\n    pa.id AS pasta_id,\n    pa.numero AS numero_pasta,\n    pa.created_date,\n    pa.created_by,\n    pa.modified_date,\n    pa.modified_by\nFROM att_processo.pasta pa\nWHERE pa.numero = :numero_pasta -- ex: '2022.01.000001'",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_003_proc_pas",
+      "name": "Processos dentro da pasta",
+      "category": "01 - Processo e pasta",
+      "description": "Lista os processos vinculados a uma pasta administrativa.",
+      "tags": [
+        "pasta",
+        "processo",
+        "vinculo"
+      ],
+      "body": "SELECT\n    p.id AS processo_id,\n    p.numero,\n    p.pasta_id,\n    p.classe_id,\n    p.created_date,\n    p.created_by\nFROM att_processo.processo p\nWHERE p.pasta_id = (\n    SELECT pa.id\n    FROM att_processo.pasta pa\n    WHERE pa.numero = :numero_pasta\n)\nORDER BY p.created_date DESC",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_004_diag_pro",
+      "name": "Diagnóstico rápido do processo",
+      "category": "99 - Diagnóstico rápido",
+      "description": "Visão consolidada do processo, classe, tramitação, procedimento e distribuição ativa.",
+      "tags": [
+        "processo",
+        "distribuicao",
+        "mesa",
+        "unidade",
+        "diagnostico"
+      ],
+      "body": "WITH proc AS (\n    SELECT\n        p.id AS processo_id,\n        p.numero,\n        p.pasta_id,\n        p.classe_id,\n        p.eletronico_judiciario,\n        p.juizado_especial\n    FROM att_processo.processo p\n    WHERE p.numero = :numero_processo\n)\nSELECT\n    proc.processo_id,\n    proc.numero,\n    proc.pasta_id,\n    c.nome AS classe_nome,\n    CASE\n        WHEN NVL(proc.eletronico_judiciario, 0) = 1 THEN 'ELETRONICO'\n        ELSE 'FISICO'\n    END AS tipo_tramitacao,\n    CASE\n        WHEN NVL(proc.juizado_especial, 0) = 1 THEN 'JUIZADO_ESPECIAL'\n        ELSE 'COMUM'\n    END AS tipo_procedimento,\n    d.id AS distribuicao_id,\n    d.local_distribuicao_id AS unidade_id,\n    unidade.nome AS unidade_nome,\n    d.local_id AS mesa_id,\n    mesa.nome AS mesa_nome,\n    d.usuario,\n    d.created_date AS data_distribuicao\nFROM proc\nLEFT JOIN att_processo.classe c\n    ON c.id = proc.classe_id\nLEFT JOIN att_distribuicao.distribuicao d\n    ON d.processo_id = proc.processo_id\n   AND d.tipo_objeto = 'PROCESSO'\n   AND d.data_estorno IS NULL\nLEFT JOIN att_security.local unidade\n    ON unidade.id = d.local_distribuicao_id\nLEFT JOIN att_security.local mesa\n    ON mesa.id = d.local_id\nORDER BY d.created_date DESC",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_005_loc_proc",
+      "name": "Localização atual do processo",
+      "category": "02 - Distribuição",
+      "description": "Consulta a distribuição ativa do processo, com unidade, mesa e usuário responsável.",
+      "tags": [
+        "processo",
+        "distribuicao",
+        "mesa",
+        "unidade"
+      ],
+      "body": "SELECT\n    p.id AS processo_id,\n    p.numero,\n    d.id AS distribuicao_id,\n    d.local_distribuicao_id AS unidade_id,\n    unidade.nome AS unidade_nome,\n    d.local_id AS mesa_id,\n    mesa.nome AS mesa_nome,\n    d.usuario,\n    u.nome AS usuario_nome,\n    d.created_date,\n    d.created_by\nFROM att_processo.processo p\nJOIN att_distribuicao.distribuicao d\n    ON d.processo_id = p.id\nLEFT JOIN att_security.local unidade\n    ON unidade.id = d.local_distribuicao_id\nLEFT JOIN att_security.local mesa\n    ON mesa.id = d.local_id\nLEFT JOIN att_security.usuario u\n    ON u.username = d.usuario\nWHERE p.numero = :numero_processo\n  AND d.tipo_objeto = 'PROCESSO'\n  AND d.data_estorno IS NULL\nORDER BY d.created_date DESC\nFETCH FIRST 20 ROWS ONLY",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_006_hist_dis",
+      "name": "Histórico de distribuição por processo",
+      "category": "02 - Distribuição",
+      "description": "Lista o histórico de distribuição do processo, incluindo registros estornados.",
+      "tags": [
+        "processo",
+        "distribuicao",
+        "historico"
+      ],
+      "body": "SELECT\n    d.id AS distribuicao_id,\n    d.tipo_objeto,\n    d.objeto_id,\n    d.processo_id,\n    d.local_distribuicao_id AS unidade_id,\n    unidade.nome AS unidade_nome,\n    d.local_id AS mesa_id,\n    mesa.nome AS mesa_nome,\n    d.usuario,\n    d.created_date,\n    d.created_by,\n    d.data_estorno\nFROM att_distribuicao.distribuicao d\nLEFT JOIN att_security.local unidade\n    ON unidade.id = d.local_distribuicao_id\nLEFT JOIN att_security.local mesa\n    ON mesa.id = d.local_id\nWHERE d.processo_id = :processo_id\nORDER BY d.created_date DESC",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_007_part_dem",
+      "name": "Participantes de demanda",
+      "category": "02 - Distribuição",
+      "description": "Consulta participantes vinculados à distribuição de uma demanda.",
+      "tags": [
+        "demanda",
+        "participante",
+        "distribuicao"
+      ],
+      "body": "SELECT\n    d.id AS distribuicao_id,\n    d.objeto_id,\n    p.tipo_participacao_id,\n    tp.nome AS tipo_participacao,\n    tp.contemplatoria,\n    p.usuario,\n    u.nome AS usuario_nome,\n    p.local_id,\n    l.nome AS local_nome\nFROM att_distribuicao.distribuicao d\nJOIN att_distribuicao.participante p\n    ON p.distribuicao_id = d.id\nLEFT JOIN att_distribuicao.tipo_participacao tp\n    ON tp.id = p.tipo_participacao_id\nLEFT JOIN att_security.usuario u\n    ON u.username = p.usuario\nLEFT JOIN att_security.local l\n    ON l.id = p.local_id\nWHERE TRIM(d.objeto_id) = :demanda_id\nORDER BY p.tipo_participacao_id",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_008_redist_u",
+      "name": "Demandas redistribuídas por usuário em unidade",
+      "category": "02 - Distribuição",
+      "description": "Identifica demandas criadas ou redistribuídas por um usuário em determinada unidade.",
+      "tags": [
+        "demanda",
+        "redistribuicao",
+        "usuario",
+        "unidade"
+      ],
+      "body": "SELECT\n    d.objeto_id AS demanda_id,\n    d.local_distribuicao_id AS unidade_id,\n    d.local_id AS mesa_id,\n    d.data_estorno,\n    d.created_by,\n    d.created_date\nFROM att_distribuicao.distribuicao d\nWHERE d.tipo_objeto = 'DEMANDA'\n  AND d.local_distribuicao_id = :unidade_id\n  AND d.created_date >= TO_DATE(:data_inicio, 'YYYY-MM-DD HH24:MI:SS')\n  AND LOWER(d.created_by) = LOWER(:username)\nORDER BY d.created_date DESC",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_009_cad_user",
+      "name": "Cadastro do usuário",
+      "category": "04 - Usuário, lotação e regras",
+      "description": "Consulta cadastro básico do usuário.",
+      "tags": [
+        "usuario",
+        "cadastro",
+        "acesso"
+      ],
+      "body": "SELECT\n    u.username,\n    u.nome,\n    u.enabled,\n    u.created_date,\n    u.created_by,\n    u.modified_date,\n    u.modified_by\nFROM att_security.usuario u\nWHERE LOWER(u.username) = LOWER(:username)",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_010_lot_user",
+      "name": "Lotações atuais do usuário",
+      "category": "04 - Usuário, lotação e regras",
+      "description": "Lista lotações ativas do usuário.",
+      "tags": [
+        "usuario",
+        "lotacao",
+        "local",
+        "papel"
+      ],
+      "body": "SELECT\n    l.id AS lotacao_id,\n    l.usuario_lotado,\n    l.local_id,\n    loc.nome AS local_nome,\n    loc.tipo_local_id,\n    l.papel_id,\n    p.nome AS papel_nome,\n    l.data_inicial,\n    l.data_final,\n    l.created_date,\n    l.created_by\nFROM att_security.lotacao l\nLEFT JOIN att_security.local loc\n    ON loc.id = l.local_id\nLEFT JOIN att_security.papel p\n    ON p.id = l.papel_id\nWHERE LOWER(l.usuario_lotado) = LOWER(:username)\n  AND l.data_final IS NULL\nORDER BY loc.nome",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_011_user_reg",
+      "name": "Usuário em regras de recebimento",
+      "category": "04 - Usuário, lotação e regras",
+      "description": "Verifica se o usuário está vinculado a regras de recebimento/distribuição.",
+      "tags": [
+        "usuario",
+        "regra",
+        "recebimento",
+        "distribuicao"
+      ],
+      "body": "SELECT\n    rtu.regra_recebimento_id,\n    rr.nome AS regra_nome,\n    rr.tipo AS tipo_regra,\n    rr.local_id AS unidade_id,\n    l.nome AS unidade_nome,\n    rtu.usuario,\n    rr.data_inicial,\n    rr.data_final\nFROM att_distribuicao.regra_tem_usuario rtu\nJOIN att_distribuicao.regra_recebimento rr\n    ON rr.id = rtu.regra_recebimento_id\nLEFT JOIN att_security.local l\n    ON l.id = rr.local_id\nWHERE LOWER(rtu.usuario) = LOWER(:username)\nORDER BY rr.local_id, rr.nome",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_012_regras_u",
+      "name": "Regras ativas por unidade",
+      "category": "04 - Usuário, lotação e regras",
+      "description": "Lista regras ativas de uma unidade.",
+      "tags": [
+        "regra",
+        "unidade",
+        "distribuicao"
+      ],
+      "body": "SELECT\n    rr.id AS regra_recebimento_id,\n    rr.nome AS regra_nome,\n    rr.tipo AS tipo_regra,\n    rr.local_id AS unidade_id,\n    l.nome AS unidade_nome,\n    rr.data_inicial,\n    rr.data_final,\n    rr.created_date,\n    rr.created_by\nFROM att_distribuicao.regra_recebimento rr\nLEFT JOIN att_security.local l\n    ON l.id = rr.local_id\nWHERE rr.local_id = :unidade_id\n  AND rr.data_final IS NULL\nORDER BY rr.nome",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_013_reg_ta",
+      "name": "Regra por tipo de andamento",
+      "category": "04 - Usuário, lotação e regras",
+      "description": "Verifica regras vinculadas a tipos de andamento específicos em uma unidade.",
+      "tags": [
+        "regra",
+        "tipo_andamento",
+        "unidade"
+      ],
+      "body": "SELECT\n    rr.local_id AS unidade_id,\n    l.nome AS unidade_nome,\n    rr.id AS regra_recebimento_id,\n    rr.nome AS regra_nome,\n    rr.tipo AS tipo_regra,\n    rr.data_inicial,\n    rr.data_final,\n    rtta.tipo_andamento_id,\n    ta.nome AS tipo_andamento_nome\nFROM att_distribuicao.regra_recebimento rr\nJOIN att_security.local l\n    ON l.id = rr.local_id\nJOIN att_distribuicao.regra_tem_tipo_andamento rtta\n    ON rtta.regra_recebimento_id = rr.id\nJOIN att_processo.tipo_andamento ta\n    ON ta.id = rtta.tipo_andamento_id\nWHERE rr.local_id = :unidade_id\n  AND rr.data_final IS NULL\n  AND rtta.tipo_andamento_id IN (:tipo_andamento_id)\nORDER BY rr.nome, ta.nome",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_014_tipo_and",
+      "name": "Buscar tipo de andamento por nome",
+      "category": "05 - Andamento, documento e BPMN",
+      "description": "Pesquisa tipo de andamento pelo nome.",
+      "tags": [
+        "andamento",
+        "tipo_andamento",
+        "busca"
+      ],
+      "body": "SELECT\n    ta.id AS tipo_andamento_id,\n    ta.nome,\n    ta.origem,\n    ta.created_date,\n    ta.modified_date\nFROM att_processo.tipo_andamento ta\nWHERE UPPER(ta.nome) LIKE UPPER(:nome_tipo_andamento) -- ex: '%INTIMACAO%'\nORDER BY ta.nome",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_015_bpmn_ta",
+      "name": "BPMN por tipo de andamento",
+      "category": "05 - Andamento, documento e BPMN",
+      "description": "Verifica o BPMN configurado para um tipo de andamento.",
+      "tags": [
+        "andamento",
+        "bpmn",
+        "flow_starter"
+      ],
+      "body": "SELECT\n    fs.id,\n    fs.tipo_andamento_id,\n    ta.nome AS tipo_andamento_nome,\n    fs.bpmn,\n    fs.created_date,\n    fs.modified_date\nFROM att_demanda.flow_starter fs\nJOIN att_processo.tipo_andamento ta\n    ON ta.id = fs.tipo_andamento_id\nWHERE fs.tipo_andamento_id = :tipo_andamento_id\nORDER BY fs.created_date DESC",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_016_doc_and",
+      "name": "Tipo de documento vinculado ao andamento",
+      "category": "05 - Andamento, documento e BPMN",
+      "description": "Consulta vínculo entre tipo de documento, tipo de andamento e BPMN.",
+      "tags": [
+        "documento",
+        "tipo_documento",
+        "andamento",
+        "bpmn"
+      ],
+      "body": "SELECT\n    td.id AS tipo_documento_id,\n    td.nome AS tipo_documento_nome,\n    tdta.tipo_andamento_id,\n    ta.nome AS tipo_andamento_nome,\n    fs.bpmn\nFROM att_documento.tipo_documento td\nLEFT JOIN att_documento.tipo_documento_tipo_andamento tdta\n    ON tdta.tipo_documento_id = td.id\nLEFT JOIN att_processo.tipo_andamento ta\n    ON ta.id = tdta.tipo_andamento_id\nLEFT JOIN att_demanda.flow_starter fs\n    ON fs.tipo_andamento_id = tdta.tipo_andamento_id\nWHERE UPPER(td.nome) LIKE UPPER(:nome_tipo_documento)\nORDER BY td.nome, ta.nome",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_017_ands_pro",
+      "name": "Andamentos do processo",
+      "category": "05 - Andamento, documento e BPMN",
+      "description": "Lista andamentos de um processo pelo ID.",
+      "tags": [
+        "andamento",
+        "processo",
+        "historico"
+      ],
+      "body": "SELECT\n    a.id AS andamento_id,\n    a.processo_id,\n    a.tipo_andamento_id,\n    ta.nome AS tipo_andamento_nome,\n    a.origem,\n    a.business_key,\n    a.identificador_na_pasta,\n    a.created_date,\n    a.created_by,\n    a.modified_date,\n    a.modified_by\nFROM att_processo.andamento a\nLEFT JOIN att_processo.tipo_andamento ta\n    ON ta.id = a.tipo_andamento_id\nWHERE a.processo_id = :processo_id\nORDER BY a.created_date DESC",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_018_dem_id",
+      "name": "Demanda por ID",
+      "category": "03 - Demanda e Camunda",
+      "description": "Consulta dados básicos da demanda.",
+      "tags": [
+        "demanda",
+        "camunda",
+        "diagnostico"
+      ],
+      "body": "SELECT\n    d.id AS demanda_id,\n    d.pasta_processo_id,\n    d.local_id AS mesa_id,\n    mesa.nome AS mesa_nome,\n    d.local_distribuicao_id AS unidade_id,\n    unidade.nome AS unidade_nome,\n    d.tipo_demanda,\n    d.situacao,\n    d.created_date,\n    d.created_by,\n    d.modified_date,\n    d.modified_by\nFROM att_demanda.demanda d\nLEFT JOIN att_security.local mesa\n    ON mesa.id = d.local_id\nLEFT JOIN att_security.local unidade\n    ON unidade.id = d.local_distribuicao_id\nWHERE d.id = :demanda_id",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_019_hist_cam",
+      "name": "Histórico Camunda da demanda",
+      "category": "03 - Demanda e Camunda",
+      "description": "Consulta tarefas históricas da demanda pelo ID da task ou instância.",
+      "tags": [
+        "demanda",
+        "camunda",
+        "act_hi_taskinst"
+      ],
+      "body": "SELECT\n    t.id_ AS task_id,\n    t.name_ AS nome_tarefa,\n    t.assignee_,\n    t.start_time_,\n    t.end_time_,\n    t.delete_reason_,\n    t.proc_inst_id_\nFROM att_demanda.act_hi_taskinst t\nWHERE t.id_ = :demanda_id\n   OR t.proc_inst_id_ = :proc_inst_id\nORDER BY t.start_time_ DESC",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_020_flux_dem",
+      "name": "Fluxo percorrido pela demanda",
+      "category": "03 - Demanda e Camunda",
+      "description": "Lista atividades percorridas no fluxo Camunda.",
+      "tags": [
+        "demanda",
+        "camunda",
+        "act_hi_actinst",
+        "bpmn"
+      ],
+      "body": "SELECT\n    a.proc_def_id_ AS nome_bpmn_versao,\n    a.sequence_counter_ AS sequencia,\n    a.act_id_,\n    a.act_type_,\n    a.act_name_,\n    a.task_id_,\n    a.assignee_,\n    a.start_time_,\n    a.end_time_,\n    a.duration_\nFROM att_demanda.act_hi_actinst a\nWHERE a.proc_inst_id_ = :proc_inst_id\nORDER BY a.sequence_counter_",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_021_pub_proc",
+      "name": "Publicação por número do processo",
+      "category": "06 - Publicação e Integrajud",
+      "description": "Consulta publicações recebidas pelo número do processo.",
+      "tags": [
+        "publicacao",
+        "processo",
+        "tribunal"
+      ],
+      "body": "SELECT\n    p.id AS publicacao_id,\n    p.numero_processo,\n    p.tribunal_id,\n    p.data_disponibilizacao,\n    p.data_publicacao,\n    p.regra_descarte_id,\n    p.data_descarte,\n    p.created_date,\n    p.created_by\nFROM att_publicacao.publicacao p\nWHERE p.numero_processo = :numero_processo\nORDER BY p.created_date DESC",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_022_aj_proc",
+      "name": "Andamento judicial recebido",
+      "category": "06 - Publicação e Integrajud",
+      "description": "Consulta andamento judicial recebido pela integração.",
+      "tags": [
+        "integrajud",
+        "andamento_judicial",
+        "intimacao"
+      ],
+      "body": "SELECT\n    aj.id AS andamento_judicial_id,\n    aj.numero_processo,\n    aj.processo_id,\n    aj.tipo,\n    aj.origem_id,\n    aj.data_disponibilizacao,\n    aj.data_termino_carencia,\n    aj.data_ciencia,\n    aj.business_key,\n    aj.created_date,\n    aj.created_by\nFROM att_integrajud.andamento_judicial aj\nWHERE aj.numero_processo = :numero_processo\nORDER BY aj.created_date DESC",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_023_doc_jud",
+      "name": "Documento judicial sincronizado",
+      "category": "06 - Publicação e Integrajud",
+      "description": "Lista documentos judiciais sincronizados para um processo.",
+      "tags": [
+        "integrajud",
+        "documento_judicial",
+        "sincronizacao"
+      ],
+      "body": "SELECT\n    dj.id AS documento_judicial_id,\n    dj.processo_id,\n    dj.documento_integracao_id,\n    dj.andamento_attornatus_id,\n    dj.created_date,\n    dj.created_by\nFROM att_integrajud.documento_judicial dj\nWHERE dj.processo_id = :processo_id\nORDER BY dj.created_date DESC",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_024_cham_msg",
+      "name": "Chamada Integrajud por mensagem",
+      "category": "06 - Publicação e Integrajud",
+      "description": "Consulta chamada de serviço da integração judicial pelo ID da mensagem.",
+      "tags": [
+        "integrajud",
+        "chamada_servico",
+        "mensagem"
+      ],
+      "body": "SELECT\n    cs.*\nFROM att_integrajud.chamada_servico cs\nWHERE cs.mensagem_id = :mensagem_id\nORDER BY cs.created_date DESC",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_025_prot_err",
+      "name": "Protocolo com erro por usuário",
+      "category": "07 - Protocolo e tribunal",
+      "description": "Consulta protocolos com erro por usuário a partir de uma data.",
+      "tags": [
+        "protocolo",
+        "erro",
+        "usuario",
+        "tribunal"
+      ],
+      "body": "SELECT\n    prot.id AS protocolo_id,\n    prot.processo_id,\n    prot.status,\n    prot.created_by,\n    prot.created_date,\n    prot.modified_date,\n    prot.mensagem\nFROM att_integrajud.protocolo prot\nWHERE LOWER(prot.created_by) = LOWER(:username)\n  AND prot.status = 'ERRO'\n  AND prot.modified_date >= TO_DATE(:data_inicio, 'YYYY-MM-DD HH24:MI:SS')\nORDER BY prot.modified_date DESC",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_026_prot_pro",
+      "name": "Protocolos por processo",
+      "category": "07 - Protocolo e tribunal",
+      "description": "Consulta protocolos vinculados ao processo.",
+      "tags": [
+        "protocolo",
+        "processo",
+        "integrajud"
+      ],
+      "body": "SELECT\n    prot.id AS protocolo_id,\n    prot.processo_id,\n    prot.status,\n    prot.created_by,\n    prot.created_date,\n    prot.modified_date,\n    prot.mensagem\nFROM att_integrajud.protocolo prot\nWHERE prot.processo_id = :processo_id\nORDER BY prot.modified_date DESC",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_027_trib_int",
+      "name": "Tribunais com integração ativa",
+      "category": "07 - Protocolo e tribunal",
+      "description": "Lista integrações judiciais com URL configurada.",
+      "tags": [
+        "tribunal",
+        "integracao",
+        "integrajud"
+      ],
+      "body": "SELECT\n    i.id,\n    i.nome,\n    i.tribunal_id,\n    i.url\nFROM att_integrajud.integracao i\nWHERE i.url IS NOT NULL\nORDER BY i.tribunal_id, i.id",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_028_cda_num",
+      "name": "CDA por número",
+      "category": "08 - Dívida ativa e SDA",
+      "description": "Consulta dívida/CDA pelo número.",
+      "tags": [
+        "cda",
+        "divida",
+        "sda"
+      ],
+      "body": "SELECT\n    d.id AS divida_id,\n    d.numero,\n    d.identificador_no_cliente,\n    d.devedor_id,\n    d.categoria_id,\n    d.data_prescricao,\n    d.created_date,\n    d.created_by,\n    d.modified_date,\n    d.modified_by\nFROM att_divida.divida d\nWHERE d.numero = :numero_cda",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_029_aj_cda",
+      "name": "Ajuizamento da CDA",
+      "category": "08 - Dívida ativa e SDA",
+      "description": "Consulta ajuizamentos vinculados a uma dívida.",
+      "tags": [
+        "cda",
+        "ajuizamento",
+        "divida"
+      ],
+      "body": "SELECT\n    a.id AS ajuizamento_id,\n    a.divida_id,\n    a.numero_judicial,\n    a.data_ajuizamento,\n    a.lote_processamento_id,\n    a.created_date,\n    a.created_by\nFROM att_divida.ajuizamento a\nWHERE a.divida_id = :divida_id\nORDER BY a.created_date DESC",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_030_rem_aj",
+      "name": "Remoção de ajuizamento",
+      "category": "08 - Dívida ativa e SDA",
+      "description": "Consulta registros de ajuizamento removido para uma dívida.",
+      "tags": [
+        "cda",
+        "desajuizamento",
+        "ajuizamento_removido"
+      ],
+      "body": "SELECT\n    ar.id AS ajuizamento_removido_id,\n    ar.divida_id,\n    ar.data_ajuizamento,\n    ar.created_date,\n    ar.created_by,\n    ar.motivo\nFROM att_divida.ajuizamento_removido ar\nWHERE ar.divida_id = :divida_id\nORDER BY ar.created_date DESC",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_031_sda_cham",
+      "name": "Chamada SDA por identificador da dívida",
+      "category": "08 - Dívida ativa e SDA",
+      "description": "Consulta chamadas de serviço SDA associadas ao identificador da dívida.",
+      "tags": [
+        "sda",
+        "chamada_servico",
+        "divida",
+        "cda"
+      ],
+      "body": "SELECT\n    cda.numero,\n    cda.id AS divida_id,\n    cda.identificador_no_cliente,\n    cs.id AS chamada_servico_id,\n    cs.servico,\n    cs.created_date,\n    cs.created_by,\n    cs.status,\n    cs.mensagem\nFROM att_divida.chamada_servico cs\nJOIN att_divida.chamada_servico_tem_divida_identificador_no_cliente csd\n    ON csd.chamada_servico_id = cs.id\nJOIN att_divida.divida cda\n    ON cda.identificador_no_cliente = csd.identificador_divida\nWHERE cs.servico = :servico\n  AND csd.identificador_divida = :identificador_divida\nORDER BY cs.id DESC",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_032_cat_agr",
+      "name": "Categoria permite agrupamento CDA",
+      "category": "08 - Dívida ativa e SDA",
+      "description": "Verifica se a categoria da dívida permite agrupamento em kit de ajuizamento.",
+      "tags": [
+        "cda",
+        "categoria",
+        "agrupamento",
+        "ajuizamento"
+      ],
+      "body": "SELECT\n    d.numero,\n    d.id AS divida_id,\n    c.id AS categoria_id,\n    c.nome AS categoria_nome,\n    c.permite_agrupamento_kit_ajuizamento\nFROM att_divida.divida d\nJOIN att_divida.categoria c\n    ON c.id = d.categoria_id\nWHERE d.numero IN (:numeros_cda)\nORDER BY d.numero",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_033_param_id",
+      "name": "Parâmetro por ID",
+      "category": "09 - Parâmetros e configuração",
+      "description": "Consulta parâmetro de configuração por ID.",
+      "tags": [
+        "parametro",
+        "configuracao"
+      ],
+      "body": "SELECT\n    cp.parametro_id,\n    cp.valor,\n    cp.instituicao_id,\n    cp.created_date,\n    cp.created_by,\n    cp.modified_date,\n    cp.modified_by\nFROM att_admin.configuracao_parametro cp\nWHERE cp.parametro_id = :parametro_id\nORDER BY cp.instituicao_id",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_034_param_te",
+      "name": "Buscar parâmetro por termo",
+      "category": "09 - Parâmetros e configuração",
+      "description": "Pesquisa parâmetros por parte do nome.",
+      "tags": [
+        "parametro",
+        "configuracao",
+        "busca"
+      ],
+      "body": "SELECT\n    cp.parametro_id,\n    cp.valor,\n    cp.instituicao_id,\n    cp.modified_date,\n    cp.modified_by\nFROM att_admin.configuracao_parametro cp\nWHERE UPPER(cp.parametro_id) LIKE UPPER(:termo) -- ex: '%DESCARTE%'\nORDER BY cp.parametro_id",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_035_aud_id",
+      "name": "Auditoria por identificador",
+      "category": "10 - Auditoria",
+      "description": "Consulta alterações auditadas por identificador de entidade.",
+      "tags": [
+        "auditoria",
+        "rastreabilidade",
+        "alteracao"
+      ],
+      "body": "SELECT\n    a.data_transacao,\n    ai.valor AS identificador,\n    aa.valor_antigo,\n    aa.valor_novo,\n    a.usuario,\n    aa.atributo_id,\n    a.id AS auditoria_id\nFROM att_auditoria.auditoria a\nJOIN att_auditoria.auditoria_entidade ae\n    ON ae.auditoria_id = a.id\nJOIN att_auditoria.auditoria_identificacao ai\n    ON ai.auditoria_entidade_id = ae.id\nJOIN att_auditoria.auditoria_atributo aa\n    ON aa.auditoria_entidade_id = ae.id\nWHERE ai.valor LIKE :identificador\nORDER BY a.data_transacao DESC\nFETCH FIRST 100 ROWS ONLY",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_036_login_us",
+      "name": "Últimos acessos do usuário",
+      "category": "10 - Auditoria",
+      "description": "Consulta os últimos acessos do usuário no sistema.",
+      "tags": [
+        "auditoria",
+        "login",
+        "usuario",
+        "acesso"
+      ],
+      "body": "SELECT\n    rl.username,\n    rl.data,\n    rl.ip,\n    rl.user_agent\nFROM att_auditoria.registro_login rl\nWHERE LOWER(rl.username) = LOWER(:username)\nORDER BY rl.data DESC\nFETCH FIRST 10 ROWS ONLY",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_037_classes",
+      "name": "Listar classes",
+      "category": "11 - Classes e assuntos",
+      "description": "Lista classes processuais cadastradas.",
+      "tags": [
+        "classe",
+        "processo"
+      ],
+      "body": "SELECT\n    c.id,\n    c.nome,\n    c.codigo,\n    c.created_date,\n    c.modified_date\nFROM att_processo.classe c\nORDER BY c.nome",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_038_classes_",
+      "name": "Classes efetivamente usadas",
+      "category": "11 - Classes e assuntos",
+      "description": "Lista classes com total de processos vinculados.",
+      "tags": [
+        "classe",
+        "processo",
+        "contagem"
+      ],
+      "body": "SELECT\n    c.id,\n    c.nome,\n    COUNT(*) AS total_processos\nFROM att_processo.processo p\nJOIN att_processo.classe c\n    ON c.id = p.classe_id\nWHERE p.data_cancelamento IS NULL\nGROUP BY\n    c.id,\n    c.nome\nORDER BY total_processos DESC",
+      "native": false
+    },
+    {
+      "id": "custom_1782131743527_039_ass_past",
+      "name": "Assunto institucional da pasta",
+      "category": "11 - Classes e assuntos",
+      "description": "Consulta assuntos institucionais vinculados a uma pasta.",
+      "tags": [
+        "assunto",
+        "pasta",
+        "processo"
+      ],
+      "body": "SELECT\n    pa.id AS pasta_id,\n    pa.numero AS numero_pasta,\n    ai.id AS assunto_id,\n    ai.nome AS assunto_nome\nFROM att_processo.pasta pa\nJOIN att_processo.pasta_tem_assunto_instituicao pti\n    ON pti.pasta_id = pa.id\nJOIN att_processo.assunto_instituicao ai\n    ON ai.id = pti.assunto_id\nWHERE pa.numero = :numero_pasta\nORDER BY ai.nome",
+      "native": false
+    }
+  ];
+
+  function cloneSnippet(snippet) {
+    return {
+      id: String(snippet.id),
+      name: String(snippet.name || "Snippet"),
+      category: String(snippet.category || "Personalizados"),
+      description: String(snippet.description || ""),
+      tags: Array.isArray(snippet.tags) ? snippet.tags.slice(0, 12) : [],
+      body: String(snippet.body || ""),
+      native: false
+    };
+  }
+
+  function ensureDefaultSnippets() {
+    var installedVersion = Number(storage.get(KEYS.snippetDefaultsVersion) || 0);
+    if (installedVersion >= DEFAULT_SNIPPETS_VERSION) return;
+
+    var existing = storage.getJson(KEYS.customSnippets);
+    var merged = DEFAULT_SNIPPETS.map(function (snippet) {
+      return cloneSnippet(snippet);
+    });
+
+    if (Array.isArray(existing)) {
+      existing.forEach(function (snippet) {
+        if (!snippet || !snippet.id || !snippet.body) return;
+        var copy = cloneSnippet(snippet);
+        var index = merged.findIndex(function (current) { return current.id === copy.id; });
+        if (index >= 0) merged[index] = copy;
+        else merged.push(copy);
+      });
+    }
+
+    var validIds = Object.create(null);
+    merged.forEach(function (snippet) { validIds[snippet.id] = true; });
+    var savedFavorites = storage.getJson(KEYS.snippetFavorites);
+    storage.setJson(KEYS.customSnippets, merged);
+    storage.setJson(KEYS.snippetFavorites, Array.isArray(savedFavorites) ? savedFavorites.filter(function (id) {
+      return !/^native_\d+$/.test(id) && validIds[id];
+    }) : []);
+    storage.set(KEYS.snippetDefaultsVersion, String(DEFAULT_SNIPPETS_VERSION));
+  }
+
+  function customSnippets(){ensureDefaultSnippets();var x=storage.getJson(KEYS.customSnippets);return Array.isArray(x)?x:[];}
+  function favorites(){ensureDefaultSnippets();var x=storage.getJson(KEYS.snippetFavorites);return Array.isArray(x)?x:[];}
+  function allSnippets(){return customSnippets();}
   function clearSnippetStops(){state.snippetStops.forEach(function(x){try{x.clear();}catch(_){}});state.snippetStops=[];state.snippetStopIndex=-1;if(state.snippetEndMark){try{state.snippetEndMark.clear();}catch(_){}state.snippetEndMark=null;}}
   function parseSnippet(body,selection){var out="",stops=[],end=null,last=0,re=/\$\{([A-Z0-9_]+)(?::([^}]*))?\}/gi,m;while((m=re.exec(body))){out+=body.slice(last,m.index);var n=m[1].toUpperCase(),v=m[2]!==undefined?m[2]:n;if(n==="SELECAO")v=selection||v;if(n==="CURSOR"){end=out.length;v="";}var a=out.length;out+=v;if(n!=="CURSOR"&&v)stops.push([a,out.length]);last=re.lastIndex;}out+=body.slice(last);return{text:out,stops:stops,end:end===null?out.length:end};}
   function selectSnippetStop(i){if(!state.snippetStops.length)return false;i=Math.max(0,Math.min(i,state.snippetStops.length-1));var f=state.snippetStops[i].find();if(!f)return false;state.snippetStopIndex=i;state.sqlEditor.getDoc().setSelection(f.from,f.to);return true;}

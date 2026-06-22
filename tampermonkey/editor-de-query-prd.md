@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Editor de Query.user.js`
 
 Arquivo publicado: `tampermonkey/editor-de-query.user.js`
 
-Versao do script: `2026-06-22.02`
+Versao do script: `2026-06-22.03`
 
-Versao do documento: `2026-06-22.02`
+Versao do documento: `2026-06-22.03`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/editor-de-query.user.js`
@@ -281,7 +281,10 @@ O editor possui uma biblioteca de trechos SQL reutilizaveis, acessivel pela ribb
 Funcionalidades existentes:
 
 - Busca e filtro por categoria.
-- Quinze snippets SQL nativos.
+- Catalogo padrao ATTUS N2 com 39 snippets organizados por categoria (novo).
+- Remocao do catalogo generico inicial de 15 snippets (novo).
+- Todos os snippets padrao podem ser editados ou excluidos (novo).
+- Carga inicial versionada, sem recriar automaticamente itens excluidos pelo usuario (novo).
 - Insercao no cursor ou substituicao da selecao.
 - Placeholders `${NOME}` e `${NOME:valor}`.
 - Navegacao com `Tab` e `Shift+Tab`.
