@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Editor de Query.user.js`
 
 Arquivo publicado: `tampermonkey/editor-de-query.user.js`
 
-Versao do script: `2026-06-19.02`
+Versao do script: `2026-06-22.01`
 
-Versao do documento: `2026-06-19.02`
+Versao do documento: `2026-06-22.01`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/editor-de-query.user.js`
@@ -287,7 +287,9 @@ Funcionalidades existentes:
 - Navegacao com `Tab` e `Shift+Tab`.
 - Placeholders especiais `${SELECAO}` e `${CURSOR}`.
 - Favoritos persistentes.
-- Cadastro, edicao e exclusao de snippets personalizados.
+- Cadastro, edicao e exclusao de snippets personalizados por formulario dedicado (novo).
+- Campos de nome, categoria, descricao, tags e codigo SQL (novo).
+- Preenchimento inicial do codigo a partir da selecao atual do editor (novo).
 - Exportacao e importacao em JSON.
 
 ## 8. Persistencia e Estado

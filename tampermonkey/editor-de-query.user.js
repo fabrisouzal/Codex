@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Editor de Query
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-19.02
+// @version      2026-06-22.01
 // @description  Editor SQL Pro. Accordion para ocultar/mostrar query + Export .sql + temas + painel de configurações.
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -184,6 +184,7 @@
     settingsOverlayEl:  null,
     settingsWindowEl:   null,
     snippetsOverlayEl:  null,
+    snippetEditorOverlayEl: null,
     snippetStops:       [],
     snippetStopIndex:   -1,
     snippetEndMark:     null,
@@ -454,11 +455,150 @@
   function selectSnippetStop(i){if(!state.snippetStops.length)return false;i=Math.max(0,Math.min(i,state.snippetStops.length-1));var f=state.snippetStops[i].find();if(!f)return false;state.snippetStopIndex=i;state.sqlEditor.getDoc().setSelection(f.from,f.to);return true;}
   function snippetTab(cm,back){if(!state.snippetStops.length)return CodeMirror.Pass;var n=state.snippetStopIndex+(back?-1:1);if(n<0)n=0;if(n>=state.snippetStops.length){var p=state.snippetEndMark&&state.snippetEndMark.find();clearSnippetStops();if(p)cm.getDoc().setCursor(p);return;}selectSnippetStop(n);}
   function insertSnippet(x){clearSnippetStops();var d=state.sqlEditor.getDoc(),f=d.getCursor("from"),t=d.getCursor("to"),r=parseSnippet(x.body,d.getSelection()),base=d.indexFromPos(f);state.sqlEditor.operation(function(){d.replaceRange(r.text,f,t,"+snippet");r.stops.forEach(function(q){state.snippetStops.push(d.markText(d.posFromIndex(base+q[0]),d.posFromIndex(base+q[1]),{className:"sql-snippet-placeholder",inclusiveLeft:true,inclusiveRight:true}));});state.snippetEndMark=d.setBookmark(d.posFromIndex(base+r.end));});closeSnippets();if(!selectSnippetStop(0)){var p=state.snippetEndMark.find();clearSnippetStops();if(p)d.setCursor(p);}state.sqlEditor.focus();}
-  function editSnippet(x){var sel=state.sqlEditor.getDoc().getSelection(),name=prompt("Nome do snippet:",x?x.name:"");if(name===null||!name.trim())return;var cat=prompt("Categoria:",x?x.category:"Personalizados");if(cat===null)return;var body=prompt("C\u00f3digo SQL (use ${CAMPO:valor}):",x?x.body:(sel||"SELECT * FROM ${TABELA}${CURSOR}"));if(body===null||!body.trim())return;var list=customSnippets(),item={id:x?x.id:"custom_"+Date.now(),name:name.trim(),category:cat.trim()||"Personalizados",body:body,native:false},i=list.findIndex(function(a){return a.id===item.id;});if(i>=0)list[i]=item;else list.push(item);storage.setJson(KEYS.customSnippets,list);openSnippets();}
-  function deleteSnippet(x){if(confirm("Excluir '"+x.name+"'?")){storage.setJson(KEYS.customSnippets,customSnippets().filter(function(a){return a.id!==x.id;}));openSnippets();}}
+  function closeSnippetEditor() {
+    if (state.snippetEditorOverlayEl) state.snippetEditorOverlayEl.remove();
+    state.snippetEditorOverlayEl = null;
+  }
+
+  function editSnippet(item) {
+    closeSnippetEditor();
+
+    var overlay = document.createElement("div");
+    overlay.className = "tm-modal-ov tm-snippet-editor-overlay";
+    var dialog = document.createElement("div");
+    dialog.className = "tm-snippet-editor";
+
+    var header = document.createElement("div");
+    header.className = "tm-snippet-editor-head";
+    var title = document.createElement("strong");
+    title.textContent = item ? "Editar snippet" : "Novo snippet";
+    var closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.textContent = "Fechar";
+    closeButton.addEventListener("click", closeSnippetEditor, true);
+    header.appendChild(title);
+    header.appendChild(closeButton);
+
+    var form = document.createElement("div");
+    form.className = "tm-snippet-editor-form";
+
+    function createField(labelText, control) {
+      var field = document.createElement("label");
+      var label = document.createElement("span");
+      label.textContent = labelText;
+      field.appendChild(label);
+      field.appendChild(control);
+      return field;
+    }
+
+    var nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.maxLength = 80;
+    nameInput.value = item ? item.name : "";
+
+    var categoryInput = document.createElement("input");
+    categoryInput.type = "text";
+    categoryInput.maxLength = 40;
+    categoryInput.value = item ? item.category : "Personalizados";
+
+    var descriptionInput = document.createElement("textarea");
+    descriptionInput.className = "tm-snippet-description";
+    descriptionInput.maxLength = 240;
+    descriptionInput.value = item ? (item.description || "") : "";
+
+    var tagsInput = document.createElement("input");
+    tagsInput.type = "text";
+    tagsInput.value = item && Array.isArray(item.tags) ? item.tags.join(", ") : "";
+    tagsInput.placeholder = "consulta, relatório, suporte";
+
+    var bodyInput = document.createElement("textarea");
+    bodyInput.className = "tm-snippet-code";
+    var selectedSql = state.sqlEditor ? state.sqlEditor.getDoc().getSelection() : "";
+    bodyInput.value = item ? item.body : (selectedSql || "SELECT\n    ${COLUNAS:*}\nFROM ${TABELA}\nWHERE ${CONDICAO:1 = 1}${CURSOR}");
+
+    var help = document.createElement("div");
+    help.className = "tm-snippet-editor-help";
+    help.textContent = "Placeholders: ${CAMPO}, ${CAMPO:valor padrão}, ${SELECAO} e ${CURSOR}.";
+
+    form.appendChild(createField("Nome", nameInput));
+    form.appendChild(createField("Categoria", categoryInput));
+    form.appendChild(createField("Descrição", descriptionInput));
+    form.appendChild(createField("Tags separadas por vírgula", tagsInput));
+    form.appendChild(createField("Código SQL", bodyInput));
+    form.appendChild(help);
+
+    var footer = document.createElement("div");
+    footer.className = "tm-snippet-editor-footer";
+    var cancelButton = document.createElement("button");
+    cancelButton.type = "button";
+    cancelButton.textContent = "Cancelar";
+    cancelButton.addEventListener("click", closeSnippetEditor, true);
+    var saveButton = document.createElement("button");
+    saveButton.type = "button";
+    saveButton.className = "primary";
+    saveButton.textContent = item ? "Salvar alterações" : "Criar snippet";
+    saveButton.addEventListener("click", function () {
+      var name = nameInput.value.trim();
+      var body = bodyInput.value;
+      if (!name) {
+        nameInput.focus();
+        return alert("Informe o nome do snippet.");
+      }
+      if (!body.trim()) {
+        bodyInput.focus();
+        return alert("Informe o código SQL do snippet.");
+      }
+
+      var saved = customSnippets();
+      var updated = {
+        id: item ? item.id : "custom_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+        name: name,
+        category: categoryInput.value.trim() || "Personalizados",
+        description: descriptionInput.value.trim(),
+        tags: tagsInput.value.split(",").map(function (tag) { return tag.trim(); }).filter(Boolean).slice(0, 12),
+        body: body,
+        native: false
+      };
+      var index = saved.findIndex(function (snippet) { return snippet.id === updated.id; });
+      if (index >= 0) saved[index] = updated;
+      else saved.push(updated);
+      storage.setJson(KEYS.customSnippets, saved);
+      closeSnippetEditor();
+      openSnippets();
+      showToast(item ? "Snippet atualizado" : "Snippet criado");
+    }, true);
+
+    footer.appendChild(cancelButton);
+    footer.appendChild(saveButton);
+    dialog.appendChild(header);
+    dialog.appendChild(form);
+    dialog.appendChild(footer);
+    overlay.appendChild(dialog);
+    overlay.addEventListener("mousedown", function (e) {
+      if (e.target === overlay) closeSnippetEditor();
+    }, true);
+
+    var pageForm = PageAdapter.getTextarea() ? PageAdapter.getTextarea().closest("form") : null;
+    (pageForm || document.body).appendChild(overlay);
+    state.snippetEditorOverlayEl = overlay;
+    setTimeout(function () { nameInput.focus(); }, 0);
+  }
+
+  function deleteSnippet(item) {
+    if (!item || item.native) return;
+    if (!confirm("Excluir permanentemente o snippet '" + item.name + "'?")) return;
+    storage.setJson(KEYS.customSnippets, customSnippets().filter(function (snippet) {
+      return snippet.id !== item.id;
+    }));
+    storage.setJson(KEYS.snippetFavorites, favorites().filter(function (id) {
+      return id !== item.id;
+    }));
+    openSnippets();
+    showToast("Snippet excluído");
+  }
   function toggleFavorite(id){var x=favorites(),i=x.indexOf(id);if(i>=0)x.splice(i,1);else x.push(id);storage.setJson(KEYS.snippetFavorites,x);openSnippets();}
   function exportSnippets(){var b=new Blob([JSON.stringify({snippets:customSnippets(),favorites:favorites()},null,2)],{type:"application/json"}),u=URL.createObjectURL(b),a=document.createElement("a");a.href=u;a.download="editor-query-snippets.json";a.click();URL.revokeObjectURL(u);}
-  function importSnippets(file){if(!file)return;var r=new FileReader();r.onload=function(){try{var j=JSON.parse(r.result),x=Array.isArray(j)?j:j.snippets;if(!Array.isArray(x))throw 0;storage.setJson(KEYS.customSnippets,x.map(function(a,i){return{id:"custom_"+Date.now()+"_"+i,name:String(a.name||"Snippet"),category:String(a.category||"Personalizados"),body:String(a.body||""),native:false};}).filter(function(a){return a.body;}));openSnippets();}catch(_){alert("JSON inv\u00e1lido.");}};r.readAsText(file,"UTF-8");}
+  function importSnippets(file){if(!file)return;var r=new FileReader();r.onload=function(){try{var j=JSON.parse(r.result),x=Array.isArray(j)?j:j.snippets;if(!Array.isArray(x))throw 0;storage.setJson(KEYS.customSnippets,x.map(function(a,i){return{id:"custom_"+Date.now()+"_"+i,name:String(a.name||"Snippet"),category:String(a.category||"Personalizados"),description:String(a.description||""),tags:Array.isArray(a.tags)?a.tags.slice(0,12):[],body:String(a.body||""),native:false};}).filter(function(a){return a.body;}));openSnippets();}catch(_){alert("JSON inv\u00e1lido.");}};r.readAsText(file,"UTF-8");}
   function closeSnippets(){if(state.snippetsOverlayEl)state.snippetsOverlayEl.remove();state.snippetsOverlayEl=null;}
   function openSnippets(){closeSnippets();var ov=document.createElement("div");ov.className="tm-modal-ov";var w=document.createElement("div");w.className="tm-snippets-win";var h=document.createElement("div");h.className="tm-snippets-head";h.innerHTML="<strong>Snippets SQL</strong>";var acts=document.createElement("div"),search=document.createElement("input"),cat=document.createElement("select"),fav=document.createElement("input"),list=document.createElement("div"),file=document.createElement("input");search.type="search";search.placeholder="Buscar";fav.type="checkbox";file.type="file";file.accept=".json";file.style.display="none";list.className="tm-snippets-list";function btn(t,fn){var b=document.createElement("button");b.type="button";b.textContent=t;b.onclick=fn;return b;}file.onchange=function(){importSnippets(file.files[0]);};acts.append(btn("Novo",function(){editSnippet(null);}));acts.append(btn("Importar",function(){file.click();}));acts.append(btn("Exportar",exportSnippets));acts.append(btn("Fechar",closeSnippets));acts.append(file);h.append(acts);var tools=document.createElement("div");tools.className="tm-snippets-tools";var fl=document.createElement("label");fl.append(fav,document.createTextNode(" Favoritos"));tools.append(search,cat,fl);function render(){var all=allSnippets(),fs=favorites(),cs=["Todas"];all.forEach(function(x){if(cs.indexOf(x.category)<0)cs.push(x.category);});var old=cat.value||"Todas";cat.innerHTML="";cs.forEach(function(x){var o=document.createElement("option");o.value=x;o.textContent=x;cat.append(o);});cat.value=cs.indexOf(old)>=0?old:"Todas";list.innerHTML="";var q=search.value.toLowerCase();all.filter(function(x){return(cat.value==="Todas"||x.category===cat.value)&&(!fav.checked||fs.indexOf(x.id)>=0)&&(!q||(x.name+x.category+x.body).toLowerCase().indexOf(q)>=0);}).forEach(function(x){var c=document.createElement("article"),pre=document.createElement("pre"),bar=document.createElement("div"),title=document.createElement("strong");c.className="tm-snippet-card";title.textContent=x.name+" - "+x.category;pre.textContent=x.body;bar.append(btn(fs.indexOf(x.id)>=0?"?":"?",function(){toggleFavorite(x.id);}));bar.append(btn(state.sqlEditor.getDoc().somethingSelected()?"Substituir sele\u00e7\u00e3o":"Inserir",function(){insertSnippet(x);}));if(!x.native){bar.append(btn("Editar",function(){editSnippet(x);}));bar.append(btn("Excluir",function(){deleteSnippet(x);}));}c.append(title,pre,bar);list.append(c);});}search.oninput=render;cat.onchange=render;fav.onchange=render;ov.onmousedown=function(e){if(e.target===ov)closeSnippets();};w.append(h,tools,list);ov.append(w);var form=PageAdapter.getTextarea().closest("form");(form||document.body).append(ov);state.snippetsOverlayEl=ov;render();search.focus();}
 
@@ -593,6 +733,16 @@
       ".tm-modal-bd .sql-editor-container-pro .CodeMirror-scroll{min-height:0;}",
       /* Painel de configurações */
       ".tm-snippets-win{width:min(1000px,94vw);height:min(740px,88vh);background:#f8fbff;border-radius:8px;display:flex;flex-direction:column;overflow:hidden;}.tm-snippets-head{display:flex;justify-content:space-between;padding:10px;background:#eaf1f9;}.tm-snippets-head>div{display:flex;gap:5px;}.tm-snippets-tools{display:grid;grid-template-columns:1fr 200px auto;gap:8px;padding:9px;background:#fff;}.tm-snippets-list{padding:10px;overflow:auto;display:grid;grid-template-columns:repeat(2,minmax(280px,1fr));gap:8px;}.tm-snippet-card{background:#fff;border:1px solid #d6e0eb;border-radius:6px;padding:8px;display:grid;gap:6px;}.tm-snippet-card pre{margin:0;max-height:130px;overflow:auto;background:#f7f9fc;padding:6px;font:11px Consolas,monospace;}.tm-snippet-card>div{display:flex;justify-content:flex-end;gap:5px;}.sql-snippet-placeholder{background:#fff2a8;border-bottom:1px solid #d19a00;}@media(max-width:760px){.tm-snippets-list{grid-template-columns:1fr}.tm-snippets-tools{grid-template-columns:1fr}}",
+      ".tm-snippet-editor{width:min(760px,94vw);max-height:90vh;background:#fff;border-radius:9px;box-shadow:0 14px 46px rgba(0,0,0,.38);display:flex;flex-direction:column;overflow:hidden;color:#1f2937;}",
+      ".tm-snippet-editor-head{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;background:linear-gradient(#f7fbff,#eaf1f9);border-bottom:1px solid #cfdbe8;color:#20385f;}",
+      ".tm-snippet-editor-head button,.tm-snippet-editor-footer button{padding:5px 10px;border:1px solid #b7c5d8;border-radius:6px;background:#fff;color:#20385f;cursor:pointer;}",
+      ".tm-snippet-editor-form{padding:13px 15px;overflow:auto;display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;}",
+      ".tm-snippet-editor-form label{display:grid;gap:4px;font-size:12px;font-weight:700;color:#374151;}.tm-snippet-editor-form label:nth-of-type(n+3){grid-column:1/-1;}",
+      ".tm-snippet-editor-form input,.tm-snippet-editor-form textarea{width:100%;box-sizing:border-box;padding:7px;border:1px solid #b7c5d8;border-radius:6px;background:#fff;color:#20385f;font:12px Arial,sans-serif;}",
+      ".tm-snippet-editor-form textarea{resize:vertical;}.tm-snippet-description{min-height:62px;}.tm-snippet-code{min-height:260px;font-family:Consolas,monospace!important;line-height:1.4;}",
+      ".tm-snippet-editor-help{grid-column:1/-1;padding:7px 9px;background:#f4f7fb;border:1px solid #dce5ef;border-radius:5px;color:#607089;font-size:11px;}",
+      ".tm-snippet-editor-footer{display:flex;justify-content:flex-end;gap:7px;padding:10px 14px;border-top:1px solid #d6e0eb;background:#f8fbff;}.tm-snippet-editor-footer .primary{background:#185abd;color:#fff;border-color:#185abd;}",
+      "@media(max-width:650px){.tm-snippet-editor-form{grid-template-columns:1fr;}.tm-snippet-editor-form label{grid-column:1!important;}}",
       ".tm-settings-win{width:min(920px,94vw);max-height:88vh;background:#fff;border-radius:10px;box-shadow:0 12px 44px rgba(0,0,0,.32);overflow:hidden;display:flex;flex-direction:column;color:#1f2937;}",
       ".tm-settings-hd{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;background:linear-gradient(#f7fbff,#eaf1f9);border-bottom:1px solid #cfdbe8;}",
       ".tm-settings-hd .ttl{font-size:13px;font-weight:800;color:#20385f;}",
