@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Editor de Query
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-22.03
+// @version      2026-06-22.04
 // @description  Editor SQL Pro. Accordion para ocultar/mostrar query + Export .sql + temas + painel de configurações.
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -67,6 +67,7 @@
     execDraft:     "tm:queryEditor:execDraft_v1:"       + KEY_BASE,
     customSnippets:"tm:queryEditor:customSnippets_v1:"  + KEY_BASE,
     snippetFavorites:"tm:queryEditor:snippetFavorites_v1:" + KEY_BASE,
+    snippetCardSettings:"tm:queryEditor:snippetCardSettings_v1:" + KEY_BASE,
     snippetDefaultsVersion:"tm:queryEditor:snippetDefaultsVersion_v1:" + KEY_BASE,
     schemaVersion: "tm:queryEditor:schemaVersion_v1:"    + KEY_BASE
   };
@@ -997,6 +998,41 @@
   function customSnippets(){ensureDefaultSnippets();var x=storage.getJson(KEYS.customSnippets);return Array.isArray(x)?x:[];}
   function favorites(){ensureDefaultSnippets();var x=storage.getJson(KEYS.snippetFavorites);return Array.isArray(x)?x:[];}
   function allSnippets(){return customSnippets();}
+  function getSnippetCardSettings() {
+    var saved = storage.getJson(KEYS.snippetCardSettings) || {};
+    return {
+      density: saved.density === "compact" ? "compact" : "comfortable",
+      columns: [1, 2, 3].indexOf(Number(saved.columns)) >= 0 ? Number(saved.columns) : 2,
+      showDescription: saved.showDescription !== false,
+      showTags: saved.showTags !== false,
+      previewLines: [0, 4, 8, 12].indexOf(Number(saved.previewLines)) >= 0 ? Number(saved.previewLines) : 8
+    };
+  }
+  function saveSnippetCardSettings(settings) {
+    storage.setJson(KEYS.snippetCardSettings, settings);
+  }
+  function setSnippetFavorite(id, enabled) {
+    var saved = favorites();
+    var index = saved.indexOf(id);
+    if (enabled && index < 0) saved.push(id);
+    if (!enabled && index >= 0) saved.splice(index, 1);
+    storage.setJson(KEYS.snippetFavorites, saved);
+  }
+  function clearAllSnippets() {
+    if (!confirm("Excluir todos os snippets e favoritos? Esta ação não pode ser desfeita.")) return false;
+    storage.setJson(KEYS.customSnippets, []);
+    storage.setJson(KEYS.snippetFavorites, []);
+    showToast("Biblioteca de snippets limpa");
+    return true;
+  }
+  function restoreDefaultSnippets() {
+    if (!confirm("Restaurar os 39 snippets padrão ATTUS N2? Os snippets atuais serão substituídos.")) return false;
+    storage.setJson(KEYS.customSnippets, DEFAULT_SNIPPETS.map(cloneSnippet));
+    storage.setJson(KEYS.snippetFavorites, []);
+    storage.set(KEYS.snippetDefaultsVersion, String(DEFAULT_SNIPPETS_VERSION));
+    showToast("Catálogo padrão restaurado");
+    return true;
+  }
   function clearSnippetStops(){state.snippetStops.forEach(function(x){try{x.clear();}catch(_){}});state.snippetStops=[];state.snippetStopIndex=-1;if(state.snippetEndMark){try{state.snippetEndMark.clear();}catch(_){}state.snippetEndMark=null;}}
   function parseSnippet(body,selection){var out="",stops=[],end=null,last=0,re=/\$\{([A-Z0-9_]+)(?::([^}]*))?\}/gi,m;while((m=re.exec(body))){out+=body.slice(last,m.index);var n=m[1].toUpperCase(),v=m[2]!==undefined?m[2]:n;if(n==="SELECAO")v=selection||v;if(n==="CURSOR"){end=out.length;v="";}var a=out.length;out+=v;if(n!=="CURSOR"&&v)stops.push([a,out.length]);last=re.lastIndex;}out+=body.slice(last);return{text:out,stops:stops,end:end===null?out.length:end};}
   function selectSnippetStop(i){if(!state.snippetStops.length)return false;i=Math.max(0,Math.min(i,state.snippetStops.length-1));var f=state.snippetStops[i].find();if(!f)return false;state.snippetStopIndex=i;state.sqlEditor.getDoc().setSelection(f.from,f.to);return true;}
@@ -1058,6 +1094,14 @@
     tagsInput.value = item && Array.isArray(item.tags) ? item.tags.join(", ") : "";
     tagsInput.placeholder = "consulta, relatório, suporte";
 
+    var favoriteInput = document.createElement("input");
+    favoriteInput.type = "checkbox";
+    favoriteInput.checked = item ? favorites().indexOf(item.id) >= 0 : false;
+    var favoriteField = document.createElement("label");
+    favoriteField.className = "tm-snippet-favorite-field";
+    favoriteField.appendChild(favoriteInput);
+    favoriteField.appendChild(document.createTextNode(" Marcar como favorito"));
+
     var bodyInput = document.createElement("textarea");
     bodyInput.className = "tm-snippet-code";
     var selectedSql = state.sqlEditor ? state.sqlEditor.getDoc().getSelection() : "";
@@ -1071,6 +1115,7 @@
     form.appendChild(createField("Categoria", categoryInput));
     form.appendChild(createField("Descrição", descriptionInput));
     form.appendChild(createField("Tags separadas por vírgula", tagsInput));
+    form.appendChild(favoriteField);
     form.appendChild(createField("Código SQL", bodyInput));
     form.appendChild(help);
 
@@ -1110,6 +1155,7 @@
       if (index >= 0) saved[index] = updated;
       else saved.push(updated);
       storage.setJson(KEYS.customSnippets, saved);
+      setSnippetFavorite(updated.id, favoriteInput.checked);
       closeSnippetEditor();
       openSnippets();
       showToast(item ? "Snippet atualizado" : "Snippet criado");
@@ -1143,11 +1189,247 @@
     openSnippets();
     showToast("Snippet excluído");
   }
-  function toggleFavorite(id){var x=favorites(),i=x.indexOf(id);if(i>=0)x.splice(i,1);else x.push(id);storage.setJson(KEYS.snippetFavorites,x);openSnippets();}
+  function toggleFavorite(id){setSnippetFavorite(id,favorites().indexOf(id)<0);}
   function exportSnippets(){var b=new Blob([JSON.stringify({snippets:customSnippets(),favorites:favorites()},null,2)],{type:"application/json"}),u=URL.createObjectURL(b),a=document.createElement("a");a.href=u;a.download="editor-query-snippets.json";a.click();URL.revokeObjectURL(u);}
   function importSnippets(file){if(!file)return;var r=new FileReader();r.onload=function(){try{var j=JSON.parse(r.result),x=Array.isArray(j)?j:j.snippets;if(!Array.isArray(x))throw 0;storage.setJson(KEYS.customSnippets,x.map(function(a,i){return{id:"custom_"+Date.now()+"_"+i,name:String(a.name||"Snippet"),category:String(a.category||"Personalizados"),description:String(a.description||""),tags:Array.isArray(a.tags)?a.tags.slice(0,12):[],body:String(a.body||""),native:false};}).filter(function(a){return a.body;}));openSnippets();}catch(_){alert("JSON inv\u00e1lido.");}};r.readAsText(file,"UTF-8");}
   function closeSnippets(){if(state.snippetsOverlayEl)state.snippetsOverlayEl.remove();state.snippetsOverlayEl=null;}
-  function openSnippets(){closeSnippets();var ov=document.createElement("div");ov.className="tm-modal-ov";var w=document.createElement("div");w.className="tm-snippets-win";var h=document.createElement("div");h.className="tm-snippets-head";h.innerHTML="<strong>Snippets SQL</strong>";var acts=document.createElement("div"),search=document.createElement("input"),cat=document.createElement("select"),fav=document.createElement("input"),list=document.createElement("div"),file=document.createElement("input");search.type="search";search.placeholder="Buscar";fav.type="checkbox";file.type="file";file.accept=".json";file.style.display="none";list.className="tm-snippets-list";function btn(t,fn){var b=document.createElement("button");b.type="button";b.textContent=t;b.onclick=fn;return b;}file.onchange=function(){importSnippets(file.files[0]);};acts.append(btn("Novo",function(){editSnippet(null);}));acts.append(btn("Importar",function(){file.click();}));acts.append(btn("Exportar",exportSnippets));acts.append(btn("Fechar",closeSnippets));acts.append(file);h.append(acts);var tools=document.createElement("div");tools.className="tm-snippets-tools";var fl=document.createElement("label");fl.append(fav,document.createTextNode(" Favoritos"));tools.append(search,cat,fl);function render(){var all=allSnippets(),fs=favorites(),cs=["Todas"];all.forEach(function(x){if(cs.indexOf(x.category)<0)cs.push(x.category);});var old=cat.value||"Todas";cat.innerHTML="";cs.forEach(function(x){var o=document.createElement("option");o.value=x;o.textContent=x;cat.append(o);});cat.value=cs.indexOf(old)>=0?old:"Todas";list.innerHTML="";var q=search.value.toLowerCase();all.filter(function(x){return(cat.value==="Todas"||x.category===cat.value)&&(!fav.checked||fs.indexOf(x.id)>=0)&&(!q||(x.name+x.category+x.body).toLowerCase().indexOf(q)>=0);}).forEach(function(x){var c=document.createElement("article"),pre=document.createElement("pre"),bar=document.createElement("div"),title=document.createElement("strong");c.className="tm-snippet-card";title.textContent=x.name+" - "+x.category;pre.textContent=x.body;bar.append(btn(fs.indexOf(x.id)>=0?"?":"?",function(){toggleFavorite(x.id);}));bar.append(btn(state.sqlEditor.getDoc().somethingSelected()?"Substituir sele\u00e7\u00e3o":"Inserir",function(){insertSnippet(x);}));if(!x.native){bar.append(btn("Editar",function(){editSnippet(x);}));bar.append(btn("Excluir",function(){deleteSnippet(x);}));}c.append(title,pre,bar);list.append(c);});}search.oninput=render;cat.onchange=render;fav.onchange=render;ov.onmousedown=function(e){if(e.target===ov)closeSnippets();};w.append(h,tools,list);ov.append(w);var form=PageAdapter.getTextarea().closest("form");(form||document.body).append(ov);state.snippetsOverlayEl=ov;render();search.focus();}
+  function openSnippets() {
+    closeSnippets();
+
+    var overlay = document.createElement("div");
+    overlay.className = "tm-modal-ov";
+    var windowEl = document.createElement("div");
+    windowEl.className = "tm-snippets-win";
+    var header = document.createElement("div");
+    header.className = "tm-snippets-head";
+    var title = document.createElement("strong");
+    title.textContent = "Snippets SQL";
+    var actions = document.createElement("div");
+    var search = document.createElement("input");
+    var category = document.createElement("select");
+    var favoritesOnly = document.createElement("input");
+    var list = document.createElement("div");
+    var fileInput = document.createElement("input");
+    var settingsPanel = document.createElement("section");
+
+    function button(text, handler, className) {
+      var element = document.createElement("button");
+      element.type = "button";
+      element.textContent = text;
+      if (className) element.className = className;
+      element.addEventListener("click", handler, true);
+      return element;
+    }
+    function option(value, label) {
+      var element = document.createElement("option");
+      element.value = String(value);
+      element.textContent = label;
+      return element;
+    }
+    function settingRow(labelText, control) {
+      var row = document.createElement("label");
+      var label = document.createElement("span");
+      label.textContent = labelText;
+      row.appendChild(label);
+      row.appendChild(control);
+      return row;
+    }
+
+    search.type = "search";
+    search.placeholder = "Buscar por nome, categoria, tag ou SQL";
+    favoritesOnly.type = "checkbox";
+    fileInput.type = "file";
+    fileInput.accept = ".json";
+    fileInput.style.display = "none";
+    list.className = "tm-snippets-list";
+    settingsPanel.className = "tm-snippets-settings";
+    settingsPanel.hidden = true;
+
+    var settings = getSnippetCardSettings();
+    var density = document.createElement("select");
+    density.appendChild(option("comfortable", "Confortável"));
+    density.appendChild(option("compact", "Compacto"));
+    density.value = settings.density;
+    var columns = document.createElement("select");
+    columns.appendChild(option(1, "1 coluna"));
+    columns.appendChild(option(2, "2 colunas"));
+    columns.appendChild(option(3, "3 colunas"));
+    columns.value = String(settings.columns);
+    var previewLines = document.createElement("select");
+    previewLines.appendChild(option(0, "Ocultar código"));
+    previewLines.appendChild(option(4, "4 linhas"));
+    previewLines.appendChild(option(8, "8 linhas"));
+    previewLines.appendChild(option(12, "12 linhas"));
+    previewLines.value = String(settings.previewLines);
+    var showDescription = document.createElement("input");
+    showDescription.type = "checkbox";
+    showDescription.checked = settings.showDescription;
+    var showTags = document.createElement("input");
+    showTags.type = "checkbox";
+    showTags.checked = settings.showTags;
+
+    var settingsHeader = document.createElement("div");
+    settingsHeader.className = "tm-snippets-settings-head";
+    var settingsTitle = document.createElement("strong");
+    settingsTitle.textContent = "Configurações dos snippets";
+    settingsHeader.appendChild(settingsTitle);
+    settingsHeader.appendChild(button("Fechar", function () { settingsPanel.hidden = true; }));
+    var settingsGrid = document.createElement("div");
+    settingsGrid.className = "tm-snippets-settings-grid";
+    settingsGrid.appendChild(settingRow("Densidade dos cards", density));
+    settingsGrid.appendChild(settingRow("Colunas", columns));
+    settingsGrid.appendChild(settingRow("Prévia do código", previewLines));
+    settingsGrid.appendChild(settingRow("Exibir descrição", showDescription));
+    settingsGrid.appendChild(settingRow("Exibir tags", showTags));
+    var danger = document.createElement("div");
+    danger.className = "tm-snippets-settings-danger";
+    danger.appendChild(button("Restaurar catálogo padrão", function () {
+      if (restoreDefaultSnippets()) render();
+    }));
+    danger.appendChild(button("Limpar tudo", function () {
+      if (clearAllSnippets()) render();
+    }, "danger"));
+    settingsPanel.appendChild(settingsHeader);
+    settingsPanel.appendChild(settingsGrid);
+    settingsPanel.appendChild(danger);
+
+    function persistCardSettings() {
+      settings = {
+        density: density.value,
+        columns: Number(columns.value),
+        previewLines: Number(previewLines.value),
+        showDescription: showDescription.checked,
+        showTags: showTags.checked
+      };
+      saveSnippetCardSettings(settings);
+      render();
+    }
+    [density, columns, previewLines, showDescription, showTags].forEach(function (control) {
+      control.addEventListener("change", persistCardSettings, true);
+    });
+
+    fileInput.addEventListener("change", function () { importSnippets(fileInput.files[0]); }, true);
+    actions.appendChild(button("Novo", function () { editSnippet(null); }));
+    actions.appendChild(button("Importar", function () { fileInput.click(); }));
+    actions.appendChild(button("Exportar", exportSnippets));
+    actions.appendChild(button("Configurações", function () { settingsPanel.hidden = !settingsPanel.hidden; }));
+    actions.appendChild(button("Fechar", closeSnippets));
+    actions.appendChild(fileInput);
+    header.appendChild(title);
+    header.appendChild(actions);
+
+    var tools = document.createElement("div");
+    tools.className = "tm-snippets-tools";
+    var favoritesLabel = document.createElement("label");
+    favoritesLabel.appendChild(favoritesOnly);
+    favoritesLabel.appendChild(document.createTextNode(" Somente favoritos"));
+    tools.appendChild(search);
+    tools.appendChild(category);
+    tools.appendChild(favoritesLabel);
+
+    function render() {
+      var snippets = allSnippets();
+      var savedFavorites = favorites();
+      var categories = ["Todas"];
+      snippets.forEach(function (snippet) {
+        if (categories.indexOf(snippet.category) < 0) categories.push(snippet.category);
+      });
+      var selectedCategory = category.value || "Todas";
+      category.innerHTML = "";
+      categories.forEach(function (item) { category.appendChild(option(item, item)); });
+      category.value = categories.indexOf(selectedCategory) >= 0 ? selectedCategory : "Todas";
+
+      list.innerHTML = "";
+      list.dataset.density = settings.density;
+      list.style.gridTemplateColumns = "repeat(" + settings.columns + ", minmax(0, 1fr))";
+      var query = search.value.trim().toLowerCase();
+      var filtered = snippets.filter(function (snippet) {
+        var haystack = [snippet.name, snippet.category, snippet.description, (snippet.tags || []).join(" "), snippet.body].join(" ").toLowerCase();
+        return (category.value === "Todas" || snippet.category === category.value) &&
+          (!favoritesOnly.checked || savedFavorites.indexOf(snippet.id) >= 0) &&
+          (!query || haystack.indexOf(query) >= 0);
+      });
+
+      if (!filtered.length) {
+        var empty = document.createElement("div");
+        empty.className = "tm-snippets-empty";
+        empty.textContent = snippets.length ? "Nenhum snippet encontrado." : "A biblioteca está vazia. Crie um snippet ou restaure o catálogo padrão.";
+        list.appendChild(empty);
+        return;
+      }
+
+      filtered.forEach(function (snippet) {
+        var card = document.createElement("article");
+        card.className = "tm-snippet-card";
+        var cardHeader = document.createElement("div");
+        cardHeader.className = "tm-snippet-card-head";
+        var cardTitle = document.createElement("strong");
+        cardTitle.textContent = snippet.name;
+        var categoryLabel = document.createElement("span");
+        categoryLabel.textContent = snippet.category;
+        cardHeader.appendChild(cardTitle);
+        cardHeader.appendChild(categoryLabel);
+        card.appendChild(cardHeader);
+
+        if (settings.showDescription && snippet.description) {
+          var description = document.createElement("p");
+          description.className = "tm-snippet-card-description";
+          description.textContent = snippet.description;
+          card.appendChild(description);
+        }
+        if (settings.showTags && Array.isArray(snippet.tags) && snippet.tags.length) {
+          var tags = document.createElement("div");
+          tags.className = "tm-snippet-card-tags";
+          snippet.tags.forEach(function (tag) {
+            var badge = document.createElement("span");
+            badge.textContent = tag;
+            tags.appendChild(badge);
+          });
+          card.appendChild(tags);
+        }
+        if (settings.previewLines > 0) {
+          var preview = document.createElement("pre");
+          preview.textContent = snippet.body;
+          preview.style.maxHeight = (settings.previewLines * 16 + 12) + "px";
+          card.appendChild(preview);
+        }
+
+        var cardActions = document.createElement("div");
+        cardActions.className = "tm-snippet-card-actions";
+        var isFavorite = savedFavorites.indexOf(snippet.id) >= 0;
+        var favoriteButton = button(isFavorite ? "★ Favorito" : "☆ Favoritar", function () {
+          toggleFavorite(snippet.id);
+          render();
+        }, isFavorite ? "favorite active" : "favorite");
+        favoriteButton.title = isFavorite ? "Remover dos favoritos" : "Adicionar aos favoritos";
+        cardActions.appendChild(favoriteButton);
+        cardActions.appendChild(button(state.sqlEditor.getDoc().somethingSelected() ? "Substituir seleção" : "Inserir", function () {
+          insertSnippet(snippet);
+        }));
+        cardActions.appendChild(button("Editar", function () { editSnippet(snippet); }));
+        cardActions.appendChild(button("Excluir", function () { deleteSnippet(snippet); }));
+        card.appendChild(cardActions);
+        list.appendChild(card);
+      });
+    }
+
+    search.addEventListener("input", render, true);
+    category.addEventListener("change", render, true);
+    favoritesOnly.addEventListener("change", render, true);
+    overlay.addEventListener("mousedown", function (event) {
+      if (event.target === overlay) closeSnippets();
+    }, true);
+    windowEl.appendChild(header);
+    windowEl.appendChild(settingsPanel);
+    windowEl.appendChild(tools);
+    windowEl.appendChild(list);
+    overlay.appendChild(windowEl);
+    var pageForm = PageAdapter.getTextarea() ? PageAdapter.getTextarea().closest("form") : null;
+    (pageForm || document.body).appendChild(overlay);
+    state.snippetsOverlayEl = overlay;
+    render();
+    search.focus();
+  }
 
   // ===================================================================
   // EXPORTAR .SQL
@@ -1279,13 +1561,14 @@
       ".tm-modal-bd .sql-editor-container-pro .CodeMirror{flex:1;min-height:180px;width:100% !important;height:auto !important;}",
       ".tm-modal-bd .sql-editor-container-pro .CodeMirror-scroll{min-height:0;}",
       /* Painel de configurações */
-      ".tm-snippets-win{width:min(1000px,94vw);height:min(740px,88vh);background:#f8fbff;border-radius:8px;display:flex;flex-direction:column;overflow:hidden;}.tm-snippets-head{display:flex;justify-content:space-between;padding:10px;background:#eaf1f9;}.tm-snippets-head>div{display:flex;gap:5px;}.tm-snippets-tools{display:grid;grid-template-columns:1fr 200px auto;gap:8px;padding:9px;background:#fff;}.tm-snippets-list{padding:10px;overflow:auto;display:grid;grid-template-columns:repeat(2,minmax(280px,1fr));gap:8px;}.tm-snippet-card{background:#fff;border:1px solid #d6e0eb;border-radius:6px;padding:8px;display:grid;gap:6px;}.tm-snippet-card pre{margin:0;max-height:130px;overflow:auto;background:#f7f9fc;padding:6px;font:11px Consolas,monospace;}.tm-snippet-card>div{display:flex;justify-content:flex-end;gap:5px;}.sql-snippet-placeholder{background:#fff2a8;border-bottom:1px solid #d19a00;}@media(max-width:760px){.tm-snippets-list{grid-template-columns:1fr}.tm-snippets-tools{grid-template-columns:1fr}}",
+      ".tm-snippets-win{width:min(1120px,96vw);height:min(800px,92vh);background:#f8fbff;border-radius:8px;display:flex;flex-direction:column;overflow:hidden;color:#1f2937;}.tm-snippets-head{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:#eaf1f9;border-bottom:1px solid #cfdae7;}.tm-snippets-head>div{display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end;}.tm-snippets-head button,.tm-snippets-settings button,.tm-snippet-card button{padding:5px 9px;border:1px solid #b7c5d8;border-radius:5px;background:#fff;color:#20385f;cursor:pointer;}.tm-snippets-tools{display:grid;grid-template-columns:1fr 220px auto;gap:8px;padding:9px;background:#fff;border-bottom:1px solid #dce5ef;}.tm-snippets-tools input,.tm-snippets-tools select{min-width:0;padding:6px;border:1px solid #b7c5d8;border-radius:5px;}.tm-snippets-tools label{display:flex;align-items:center;white-space:nowrap;}.tm-snippets-settings{padding:12px;background:#f7faff;border-bottom:1px solid #cfdbe8;}.tm-snippets-settings[hidden]{display:none;}.tm-snippets-settings-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;color:#20385f;}.tm-snippets-settings-grid{display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:10px;}.tm-snippets-settings-grid label{display:grid;gap:4px;font-size:12px;font-weight:700;}.tm-snippets-settings-grid select{width:100%;padding:6px;border:1px solid #b7c5d8;border-radius:5px;background:#fff;}.tm-snippets-settings-grid input[type=checkbox]{justify-self:start;width:18px;height:18px;}.tm-snippets-settings-danger{display:flex;justify-content:flex-end;gap:7px;margin-top:12px;padding-top:10px;border-top:1px solid #d9e2ec;}.tm-snippets-settings .danger{border-color:#c43b3b;color:#a12626;background:#fff7f7;}.tm-snippets-list{padding:10px;overflow:auto;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;align-content:start;}.tm-snippets-list[data-density=compact]{gap:5px;}.tm-snippet-card{min-width:0;background:#fff;border:1px solid #d6e0eb;border-radius:6px;padding:9px;display:grid;gap:7px;align-content:start;}.tm-snippets-list[data-density=compact] .tm-snippet-card{padding:6px;gap:4px;}.tm-snippet-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;}.tm-snippet-card-head strong{font-size:13px;color:#20385f;}.tm-snippet-card-head span{font-size:10px;color:#64748b;text-align:right;}.tm-snippet-card-description{margin:0;color:#526176;font-size:11px;line-height:1.35;}.tm-snippet-card-tags{display:flex;gap:4px;flex-wrap:wrap;}.tm-snippet-card-tags span{padding:2px 5px;border-radius:4px;background:#eaf1f9;color:#35547a;font-size:10px;}.tm-snippet-card pre{margin:0;overflow:auto;background:#f7f9fc;padding:6px;font:11px/16px Consolas,monospace;white-space:pre;}.tm-snippet-card-actions{display:flex;justify-content:flex-end;gap:5px;flex-wrap:wrap;margin-top:auto;}.tm-snippet-card .favorite{margin-right:auto;}.tm-snippet-card .favorite.active{border-color:#d49b16;background:#fff8db;color:#795500;}.tm-snippets-empty{grid-column:1/-1;padding:36px 16px;text-align:center;color:#64748b;background:#fff;border:1px dashed #b9c7d8;border-radius:6px;}.sql-snippet-placeholder{background:#fff2a8;border-bottom:1px solid #d19a00;}@media(max-width:900px){.tm-snippets-settings-grid{grid-template-columns:repeat(2,minmax(130px,1fr));}}@media(max-width:760px){.tm-snippets-list{grid-template-columns:1fr!important}.tm-snippets-tools{grid-template-columns:1fr}.tm-snippets-settings-grid{grid-template-columns:1fr}}",
       ".tm-snippet-editor{width:min(760px,94vw);max-height:90vh;background:#fff;border-radius:9px;box-shadow:0 14px 46px rgba(0,0,0,.38);display:flex;flex-direction:column;overflow:hidden;color:#1f2937;}",
       ".tm-snippet-editor-head{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;background:linear-gradient(#f7fbff,#eaf1f9);border-bottom:1px solid #cfdbe8;color:#20385f;}",
       ".tm-snippet-editor-head button,.tm-snippet-editor-footer button{padding:5px 10px;border:1px solid #b7c5d8;border-radius:6px;background:#fff;color:#20385f;cursor:pointer;}",
       ".tm-snippet-editor-form{padding:13px 15px;overflow:auto;display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;}",
       ".tm-snippet-editor-form label{display:grid;gap:4px;font-size:12px;font-weight:700;color:#374151;}.tm-snippet-editor-form label:nth-of-type(n+3){grid-column:1/-1;}",
       ".tm-snippet-editor-form input,.tm-snippet-editor-form textarea{width:100%;box-sizing:border-box;padding:7px;border:1px solid #b7c5d8;border-radius:6px;background:#fff;color:#20385f;font:12px Arial,sans-serif;}",
+      ".tm-snippet-editor-form .tm-snippet-favorite-field{display:flex;align-items:center;gap:6px;grid-column:1/-1;}.tm-snippet-editor-form .tm-snippet-favorite-field input{width:18px;height:18px;margin:0;}",
       ".tm-snippet-editor-form textarea{resize:vertical;}.tm-snippet-description{min-height:62px;}.tm-snippet-code{min-height:260px;font-family:Consolas,monospace!important;line-height:1.4;}",
       ".tm-snippet-editor-help{grid-column:1/-1;padding:7px 9px;background:#f4f7fb;border:1px solid #dce5ef;border-radius:5px;color:#607089;font-size:11px;}",
       ".tm-snippet-editor-footer{display:flex;justify-content:flex-end;gap:7px;padding:10px 14px;border-top:1px solid #d6e0eb;background:#f8fbff;}.tm-snippet-editor-footer .primary{background:#185abd;color:#fff;border-color:#185abd;}",

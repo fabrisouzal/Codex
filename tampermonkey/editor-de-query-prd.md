@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Editor de Query.user.js`
 
 Arquivo publicado: `tampermonkey/editor-de-query.user.js`
 
-Versao do script: `2026-06-22.03`
+Versao do script: `2026-06-22.04`
 
-Versao do documento: `2026-06-22.03`
+Versao do documento: `2026-06-22.04`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/editor-de-query.user.js`
@@ -290,9 +290,15 @@ Funcionalidades existentes:
 - Navegacao com `Tab` e `Shift+Tab`.
 - Placeholders especiais `${SELECAO}` e `${CURSOR}`.
 - Favoritos persistentes.
+- Botao textual para adicionar ou remover cada card dos favoritos (novo).
+- Opcao para definir o favorito durante o cadastro ou a edicao do snippet (novo).
 - Cadastro, edicao e exclusao de snippets personalizados por formulario dedicado (novo).
 - Campos de nome, categoria, descricao, tags e codigo SQL (novo).
 - Preenchimento inicial do codigo a partir da selecao atual do editor (novo).
+- Painel de configuracoes integrado a janela de Snippets SQL (novo).
+- Configuracao de densidade, quantidade de colunas, linhas da previa, descricao e tags dos cards (novo).
+- Acao para limpar todos os snippets e favoritos, com confirmacao (novo).
+- Acao para restaurar os 39 snippets padrao ATTUS N2 (novo).
 - Exportacao e importacao em JSON.
 
 ## 8. Persistencia e Estado
