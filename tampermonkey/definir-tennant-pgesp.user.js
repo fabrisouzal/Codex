@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         ATTUS - Definir Tennant PGESP
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-04.01
+// @version      2026-06-25.01
 // @description  Garante automaticamente o tennant PGESP quando o ATTUS estiver autenticado.
 // @author       Fabricio
+// @compatible   edge
 // @match        https://attus.pge.sp.gov.br/*
 // @match        https://homologacao.attus.pge.sp.gov.br/*
 // @match        https://pgesp.attus.ai/*

@@ -1,8 +1,9 @@
 // ==UserScript==
 // @name         Histórico SQL
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-18.01
+// @version      2026-06-25.01
 // @description  Histórico de queries com favoritos, etiquetas, comentários, export/import e painel de configurações
+// @compatible   edge
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        http://10.200.35.7/*
@@ -963,6 +964,10 @@
 
     function downloadFile(filename, content, mimeType) {
         const blob = new Blob([content], { type: mimeType || 'text/plain;charset=utf-8;' });
+        if (navigator.msSaveOrOpenBlob) {
+            navigator.msSaveOrOpenBlob(blob, filename);
+            return;
+        }
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;

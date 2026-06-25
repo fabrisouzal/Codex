@@ -1,8 +1,9 @@
 // ==UserScript==
 // @name         Exportar Transcrição Teams SharePoint
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-08.02
+// @version      2026-06-25.01
 // @description  Rola o painel de transcrição visível, captura os textos e baixa arquivo TXT/JSON
+// @compatible   edge
 // @match        *://*.sharepoint.com/*
 // @match        *://*.microsoftstream.com/*
 // @match        *://teams.microsoft.com/*
@@ -527,6 +528,10 @@
 
     function baixarArquivo(nomeArquivo, conteudo, tipo) {
         const blob = new Blob([conteudo], { type: tipo });
+        if (navigator.msSaveOrOpenBlob) {
+            navigator.msSaveOrOpenBlob(blob, nomeArquivo);
+            return;
+        }
         const url = URL.createObjectURL(blob);
 
         const link = document.createElement("a");

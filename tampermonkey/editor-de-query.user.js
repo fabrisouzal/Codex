@@ -1,8 +1,9 @@
 // ==UserScript==
 // @name         Editor de Query
 // @namespace    http://tampermonkey.net/
-// @version      2026.06.25.03
+// @version      2026.06.25.04
 // @description  Editor SQL Pro com CodeMirror, ribbon, snippets, configuracoes, import/export SQL e execucao parcial.
+// @compatible   edge
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        http://10.200.35.7/*
@@ -1355,7 +1356,21 @@
     showToast("Snippet excluído");
   }
   function toggleFavorite(id){setSnippetFavorite(id,favorites().indexOf(id)<0);}
-  function exportSnippets(){var b=new Blob([JSON.stringify({snippets:customSnippets(),favorites:favorites()},null,2)],{type:"application/json"}),u=URL.createObjectURL(b),a=document.createElement("a");a.href=u;a.download="editor-query-snippets.json";a.click();URL.revokeObjectURL(u);}
+  function downloadBlob(filename, blob) {
+    if (navigator.msSaveOrOpenBlob) {
+      navigator.msSaveOrOpenBlob(blob, filename);
+      return;
+    }
+    var u = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = u;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(u);
+  }
+  function exportSnippets(){downloadBlob("editor-query-snippets.json",new Blob([JSON.stringify({snippets:customSnippets(),favorites:favorites()},null,2)],{type:"application/json"}));}
   function importSnippets(file){if(!file)return;var r=new FileReader();r.onload=function(){try{var normalized=normalizeSnippetCollection(JSON.parse(r.result));storage.setJson(KEYS.customSnippets,normalized.snippets);storage.setJson(KEYS.snippetFavorites,normalized.favorites);openSnippets();showToast("Snippets importados");}catch(exception){alert(exception.message||"JSON inválido.");}};r.readAsText(file,"UTF-8");}
   function closeSnippets(){if(state.snippetsOverlayEl)state.snippetsOverlayEl.remove();state.snippetsOverlayEl=null;}
   function openSnippets() {
@@ -1609,14 +1624,7 @@
 
     try {
       var blob = new Blob([text], { type: "application/sql;charset=utf-8" });
-      var url = URL.createObjectURL(blob);
-      var a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      downloadBlob(filename, blob);
       showToast("Exportado: " + filename);
     } catch (_) {
       alert("Falha ao exportar .sql (possível bloqueio do navegador).");

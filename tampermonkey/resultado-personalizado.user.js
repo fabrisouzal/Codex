@@ -1,8 +1,9 @@
 // ==UserScript==
 // @name         Resultado Personalizado
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-18.01
+// @version      2026-06-25.01
 // @description  Jornada "Resultado Personalizado": Grid em acordeon, filtros, seleção, copiar grid/tabela/célula/coluna/linha e exportar CSV/HTML/TXT/XLSX/JPG.
+// @compatible   edge
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        http://10.200.35.7/*
@@ -212,6 +213,10 @@
 
   function downloadBlob(filename, mime, content) {
     var blob = new Blob([content], { type: mime });
+    if (navigator.msSaveOrOpenBlob) {
+      navigator.msSaveOrOpenBlob(blob, filename);
+      return;
+    }
     var url = URL.createObjectURL(blob);
     var a = document.createElement("a");
     a.href = url;
@@ -2381,6 +2386,11 @@
     if (!canvas) return alert("Não há dados visíveis para exportar.");
 
     canvas.toBlob(function (blob) {
+      if (navigator.msSaveOrOpenBlob) {
+        navigator.msSaveOrOpenBlob(blob, "consulta_" + tsStamp() + ".jpg");
+        showToast("JPG salvo!");
+        return;
+      }
       var url = URL.createObjectURL(blob);
       var a = document.createElement("a");
       a.href = url;
