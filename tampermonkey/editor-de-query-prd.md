@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Editor de Query.user.js`
 
 Arquivo publicado: `tampermonkey/editor-de-query.user.js`
 
-Versao do script: `2026-06-22.05`
+Versao do script: `2026-06-25.01`
 
-Versao do documento: `2026-06-22.05`
+Versao do documento: `2026-06-25.01`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/editor-de-query.user.js`
@@ -109,6 +109,7 @@ Comportamentos existentes:
 - Remocao de ponto e virgula antes da execucao.
 - Uso de texto temporario para executar selecao sem substituir permanentemente a query inteira.
 - Restauracao do conteudo apos execucao parcial quando aplicavel.
+- Execucao de selecao isolada do conteudo completo do editor, evitando que linhas fora da selecao sejam enviadas ao servidor (novo).
 
 ### 7.5 Importacao e Exportacao `.sql`
 

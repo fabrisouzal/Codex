@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Editor de Query
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-22.05
+// @version      2026-06-25.01
 // @description  Editor SQL Pro. Accordion para ocultar/mostrar query + Export .sql + temas + painel de configurações.
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -194,6 +194,7 @@
     // Restauração de seleção após execução parcial
     restoreAfterExec:   null,
     execOverrideText:   null,
+    partialRestoreTimer: null,
     execEditorSnapshot: null,
     // Flags de inicialização
     cssInjected:        false,
@@ -2756,10 +2757,11 @@
     try {
       var doc = state.sqlEditor.getDoc();
       var scroll = state.sqlEditor.getScrollInfo();
+      var partial = state.restoreAfterExec;
       state.execEditorSnapshot = {
-        text: doc.getValue(),
-        cursor: doc.getCursor(),
-        selections: doc.listSelections ? doc.listSelections() : null,
+        text: partial ? partial.original : doc.getValue(),
+        cursor: partial ? partial.cursor : doc.getCursor(),
+        selections: partial ? [{ anchor: partial.sel.from, head: partial.sel.to }] : (doc.listSelections ? doc.listSelections() : null),
         scrollLeft: scroll.left,
         scrollTop: scroll.top
       };
@@ -2809,21 +2811,28 @@
     var changed = false;
     var semicolonRemoved = false;
     var overrideText = state.execOverrideText;
+    var hasOverride = overrideText !== null && overrideText !== undefined;
+    var overrideSanitized = hasOverride ? removeSemicolonsFromSql(overrideText) : null;
 
     if (state.sqlEditor) {
       try {
         var doc = state.sqlEditor.getDoc();
         var editorText = doc.getValue();
-        var editorSanitized = removeSemicolonsFromSql(editorText);
+        var editorSanitized = hasOverride ? overrideSanitized : removeSemicolonsFromSql(editorText);
         if (editorSanitized !== editorText) {
           var cursor = doc.getCursor();
           var selFrom = doc.getCursor("from");
           var selTo = doc.getCursor("to");
           doc.setValue(editorSanitized);
-          doc.setCursor(cursor);
-          doc.setSelection(selFrom, selTo);
+          if (hasOverride) {
+            var lastLine = Math.max(doc.lineCount() - 1, 0);
+            doc.setCursor({ line: lastLine, ch: (doc.getLine(lastLine) || "").length });
+          } else {
+            doc.setCursor(cursor);
+            doc.setSelection(selFrom, selTo);
+          }
           changed = true;
-          semicolonRemoved = true;
+          semicolonRemoved = hasOverride ? (overrideSanitized !== String(overrideText || "")) : true;
         }
         state.sqlEditor.save();
       } catch (_) {}
@@ -2833,13 +2842,15 @@
     if (!ta) return;
 
     var original = ta.value || "";
-    var source = (overrideText !== null && overrideText !== undefined) ? overrideText : original;
-    var sanitized = removeSemicolonsFromSql(source);
+    var source = hasOverride ? overrideText : original;
+    var sanitized = hasOverride ? overrideSanitized : removeSemicolonsFromSql(source);
     if (sanitized !== String(source || "")) {
       semicolonRemoved = true;
     }
     if (sanitized !== original) {
       ta.value = sanitized;
+      try { ta.dispatchEvent(new Event("input", { bubbles: true })); } catch (_) {}
+      try { ta.dispatchEvent(new Event("change", { bubbles: true })); } catch (_) {}
       changed = true;
     }
 
@@ -2857,7 +2868,15 @@
       return false;
     }
     btn.click();
-    state.execOverrideText = null;
+    if (state.restoreAfterExec) {
+      if (state.partialRestoreTimer) clearTimeout(state.partialRestoreTimer);
+      state.partialRestoreTimer = setTimeout(function () {
+        state.partialRestoreTimer = null;
+        restoreEditorAfterPartialExec("Selecao enviada (editor restaurado)");
+      }, 150);
+    } else {
+      state.execOverrideText = null;
+    }
     return true;
   }
 
@@ -3028,7 +3047,7 @@
 
       // Salva o estado completo do editor para restauração após execução
       state.restoreAfterExec = {
-        original: removeSemicolonsFromSql(doc.getValue()),
+        original: doc.getValue(),
         cursor:   doc.getCursor(),
         sel:      { from: doc.getCursor("from"), to: doc.getCursor("to") }
       };
@@ -3294,6 +3313,10 @@
     var st = state.restoreAfterExec;
     state.restoreAfterExec = null;
     state.execOverrideText = null;
+    if (state.partialRestoreTimer) {
+      clearTimeout(state.partialRestoreTimer);
+      state.partialRestoreTimer = null;
+    }
 
     try {
       var doc = state.sqlEditor.getDoc();
