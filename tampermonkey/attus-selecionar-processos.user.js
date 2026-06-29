@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ATTUS - Selecionar Processos
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-29.04
+// @version      2026-06-29.05
 // @description  Adiciona um painel flutuante para selecionar rapidamente os cards visiveis do resultado de consulta de processos.
 // @author       Fabricio
 // @compatible   edge
@@ -77,13 +77,63 @@
     return null;
   }
 
+  function getAngularComponentInAncestors(element, predicate) {
+    let current = element;
+    for (let depth = 0; current && current !== document.body && depth < 24; depth += 1) {
+      const component = getAngularComponent(current, predicate);
+      if (component) return component;
+      current = current.parentElement;
+    }
+    return null;
+  }
+
   function getProcessCardComponent(card) {
-    return getAngularComponent(card, (component) => (
+    return getAngularComponentInAncestors(card, (component) => (
       component &&
       Object.prototype.hasOwnProperty.call(component, 'processo') &&
       Object.prototype.hasOwnProperty.call(component, 'checkboxChange') &&
       component.checkboxChange &&
       typeof component.checkboxChange.emit === 'function'
+    ));
+  }
+
+  function getProcessListComponent(element) {
+    return getAngularComponentInAncestors(element, (component) => (
+      component &&
+      Array.isArray(component.processosSelecionados) &&
+      typeof component.adicionarProcesso === 'function' &&
+      typeof component.removerProcesso === 'function'
+    ));
+  }
+
+  function getProcessFromCard(card) {
+    const cardComponent = getProcessCardComponent(card);
+    if (cardComponent && cardComponent.processo) return cardComponent.processo;
+
+    const component = getAngularComponentInAncestors(card, (candidate) => (
+      candidate &&
+      candidate.processo &&
+      (candidate.processo.id || candidate.processo.numero || candidate.processo.pasta)
+    ));
+    return component ? component.processo : null;
+  }
+
+  function runDetectChanges(component) {
+    if (component && component.changeDetectorRef && typeof component.changeDetectorRef.detectChanges === 'function') {
+      component.changeDetectorRef.detectChanges();
+    }
+  }
+
+  function isProcessSelectedInList(listComponent, processo) {
+    if (!listComponent || !processo) return false;
+    if (typeof listComponent.isProcessoSelecionado === 'function') {
+      try { return Boolean(listComponent.isProcessoSelecionado(processo)); } catch (_) {}
+    }
+
+    return listComponent.processosSelecionados.some((selected) => (
+      selected === processo ||
+      (selected && processo && selected.id != null && selected.id === processo.id) ||
+      (selected && processo && selected.numero && selected.numero === processo.numero)
     ));
   }
 
@@ -118,6 +168,10 @@
 
   function isChecked(element) {
     const card = element.closest('pd-processo-card');
+    const listComponent = getProcessListComponent(card || element);
+    const processo = card ? getProcessFromCard(card) : null;
+    if (listComponent && processo) return isProcessSelectedInList(listComponent, processo);
+
     const cardComponent = getProcessCardComponent(card);
     if (cardComponent) return Boolean(cardComponent.isProcessoSelecionado);
 
@@ -349,14 +403,26 @@
 
   function clickCheckbox(checkbox) {
     const card = checkbox.closest('pd-processo-card');
+    const listComponent = getProcessListComponent(card || checkbox);
+    const processo = card ? getProcessFromCard(card) : null;
+    if (listComponent && processo) {
+      const checked = isProcessSelectedInList(listComponent, processo);
+      if (checked) {
+        listComponent.removerProcesso(processo);
+      } else {
+        listComponent.adicionarProcesso(processo);
+      }
+      runDetectChanges(listComponent);
+      card && card.dispatchEvent(new CustomEvent('tm-attus-processo-selecionado', { bubbles: true, detail: { checked: !checked } }));
+      return;
+    }
+
     const cardComponent = getProcessCardComponent(card);
     if (cardComponent && cardComponent.checkboxChange && typeof cardComponent.checkboxChange.emit === 'function') {
       const checked = !Boolean(cardComponent.isProcessoSelecionado);
       cardComponent.checkboxChange.emit({ checked, source: checkbox });
       cardComponent.isProcessoSelecionado = checked;
-      if (cardComponent.changeDetectorRef && typeof cardComponent.changeDetectorRef.detectChanges === 'function') {
-        cardComponent.changeDetectorRef.detectChanges();
-      }
+      runDetectChanges(cardComponent);
       card && card.dispatchEvent(new CustomEvent('tm-attus-processo-selecionado', { bubbles: true, detail: { checked } }));
       return;
     }
