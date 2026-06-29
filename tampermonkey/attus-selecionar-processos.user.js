@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ATTUS - Selecionar Processos
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-29.03
+// @version      2026-06-29.04
 // @description  Adiciona um painel flutuante para selecionar rapidamente os cards visiveis do resultado de consulta de processos.
 // @author       Fabricio
 // @compatible   edge
@@ -92,6 +92,30 @@
     return root.matches('input[type="checkbox"]') ? root : root;
   }
 
+  function getCheckboxInside(element) {
+    if (!element) return null;
+    if (element.matches('input[type="checkbox"],mat-checkbox,.mat-checkbox,.mat-mdc-checkbox,.mdc-checkbox,.mat-pseudo-checkbox,[role="checkbox"],mat-list-option,label')) {
+      return getClickableCheckbox(element);
+    }
+
+    const inner = element.querySelector([
+      'mat-checkbox',
+      '.mat-checkbox',
+      '.mat-mdc-checkbox',
+      '.mdc-checkbox',
+      '.mat-pseudo-checkbox',
+      '[role="checkbox"]',
+      'input[type="checkbox"]',
+      '.mat-checkbox-inner-container',
+      '.mat-checkbox-frame',
+      '.mat-mdc-checkbox-touch-target',
+      '.mdc-checkbox__native-control',
+      '.mdc-checkbox__background',
+      '[class*="checkbox"]',
+    ].join(','));
+    return inner ? getClickableCheckbox(inner) : null;
+  }
+
   function isChecked(element) {
     const card = element.closest('pd-processo-card');
     const cardComponent = getProcessCardComponent(card);
@@ -129,7 +153,7 @@
 
   function getResultBlock(element) {
     let current = element;
-    for (let depth = 0; current && current !== document.body && depth < 9; depth += 1) {
+    for (let depth = 0; current && current !== document.body && depth < 24; depth += 1) {
       const txt = textOf(current);
       if (PROCESS_TEXT_RE.test(txt)) return current;
       current = current.parentElement;
@@ -151,9 +175,13 @@
     if (!document.body || !isProcessesPage()) return [];
 
     const root = getMainRoot();
-    const cards = Array.from(root.querySelectorAll('pd-processo-card'))
-      .map((card) => card.querySelector('mat-checkbox,.mat-checkbox,.mat-mdc-checkbox,[role="checkbox"],input[type="checkbox"]') || card)
-      .filter((checkbox) => isProcessResultCheckbox(checkbox));
+    const cardCandidates = [];
+    Array.from(root.querySelectorAll('pd-processo-card')).forEach((card) => {
+      cardCandidates.push(card);
+      const inner = getCheckboxInside(card);
+      if (inner) cardCandidates.push(inner);
+    });
+    const cards = cardCandidates.filter((checkbox) => isProcessResultCheckbox(checkbox));
 
     const candidates = Array.from(root.querySelectorAll([
       'input[type="checkbox"]',
@@ -162,8 +190,14 @@
       '.mat-mdc-checkbox',
       '.mdc-checkbox',
       '.mat-pseudo-checkbox',
+      '.mat-checkbox-inner-container',
+      '.mat-checkbox-frame',
+      '.mat-mdc-checkbox-touch-target',
+      '.mdc-checkbox__native-control',
+      '.mdc-checkbox__background',
       '[role="checkbox"]',
       'mat-list-option',
+      '[class*="checkbox"]',
     ].join(',')));
 
     const unique = new Map();
@@ -327,7 +361,7 @@
       return;
     }
 
-    const target = checkbox.closest('mat-checkbox,.mat-checkbox,.mat-mdc-checkbox,[role="checkbox"],label') || getClickableCheckbox(checkbox);
+    const target = getCheckboxInside(checkbox) || checkbox.closest('mat-checkbox,.mat-checkbox,.mat-mdc-checkbox,[role="checkbox"],label') || getClickableCheckbox(checkbox);
     dispatchPointerOrMouse(target, 'pointerdown', 'mousedown');
     target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
     dispatchPointerOrMouse(target, 'pointerup', 'mouseup');
