@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ATTUS - Selecionar Processos
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-29.02
+// @version      2026-06-29.03
 // @description  Adiciona um painel flutuante para selecionar rapidamente os cards visiveis do resultado de consulta de processos.
 // @author       Fabricio
 // @compatible   edge
@@ -53,12 +53,50 @@
     return document.querySelector('main,[role="main"],mat-sidenav-content,.mat-sidenav-content,.content,.app-content') || document.body;
   }
 
+  function getAngularComponent(element, predicate) {
+    if (!element) return null;
+
+    try {
+      if (window.ng && typeof window.ng.getComponent === 'function') {
+        const component = window.ng.getComponent(element);
+        if (component && predicate(component)) return component;
+      }
+    } catch (error) {
+      console.debug('[ATTUS Selecionar Processos] ng.getComponent indisponivel.', error);
+    }
+
+    const contextKey = Object.keys(element).find((key) => key.startsWith('__ngContext__'));
+    const context = contextKey ? element[contextKey] : element.__ngContext__;
+    if (!context || typeof context.length !== 'number') return null;
+
+    for (let index = 0; index < context.length; index += 1) {
+      const value = context[index];
+      if (value && typeof value === 'object' && predicate(value)) return value;
+    }
+
+    return null;
+  }
+
+  function getProcessCardComponent(card) {
+    return getAngularComponent(card, (component) => (
+      component &&
+      Object.prototype.hasOwnProperty.call(component, 'processo') &&
+      Object.prototype.hasOwnProperty.call(component, 'checkboxChange') &&
+      component.checkboxChange &&
+      typeof component.checkboxChange.emit === 'function'
+    ));
+  }
+
   function getClickableCheckbox(element) {
     const root = element.closest('mat-checkbox,.mat-checkbox,.mat-mdc-checkbox,.mdc-checkbox,.mat-pseudo-checkbox,[role="checkbox"],mat-list-option,label') || element;
-    return root.querySelector('input[type="checkbox"]') || root;
+    return root.matches('input[type="checkbox"]') ? root : root;
   }
 
   function isChecked(element) {
+    const card = element.closest('pd-processo-card');
+    const cardComponent = getProcessCardComponent(card);
+    if (cardComponent) return Boolean(cardComponent.isProcessoSelecionado);
+
     const input = element.matches('input[type="checkbox"]') ? element : element.querySelector('input[type="checkbox"]');
     const root = element.closest('mat-checkbox,.mat-checkbox,.mat-mdc-checkbox,.mdc-checkbox') || element;
     return Boolean(
@@ -74,6 +112,10 @@
   }
 
   function isDisabled(element) {
+    const card = element.closest('pd-processo-card');
+    const cardComponent = getProcessCardComponent(card);
+    if (cardComponent && cardComponent.permiteSelecionarProcesso === false) return true;
+
     const input = element.matches('input[type="checkbox"]') ? element : element.querySelector('input[type="checkbox"]');
     const root = element.closest('mat-checkbox,.mat-checkbox,.mat-mdc-checkbox,.mdc-checkbox') || element;
     return Boolean(
@@ -96,10 +138,11 @@
   }
 
   function isProcessResultCheckbox(element) {
-    if (!isVisible(element) || isDisabled(element)) return false;
+    if (!element || isDisabled(element)) return false;
     if (element.closest(`#${PANEL_ID}`)) return false;
 
     const block = getResultBlock(element);
+    if (!isVisible(block)) return false;
     if (!block || block.closest('nav,aside,header,mat-sidenav,.mat-sidenav')) return false;
     return PROCESS_TEXT_RE.test(textOf(block));
   }
@@ -108,6 +151,10 @@
     if (!document.body || !isProcessesPage()) return [];
 
     const root = getMainRoot();
+    const cards = Array.from(root.querySelectorAll('pd-processo-card'))
+      .map((card) => card.querySelector('mat-checkbox,.mat-checkbox,.mat-mdc-checkbox,[role="checkbox"],input[type="checkbox"]') || card)
+      .filter((checkbox) => isProcessResultCheckbox(checkbox));
+
     const candidates = Array.from(root.querySelectorAll([
       'input[type="checkbox"]',
       'mat-checkbox',
@@ -120,7 +167,7 @@
     ].join(',')));
 
     const unique = new Map();
-    candidates.forEach((candidate) => {
+    cards.concat(candidates).forEach((candidate) => {
       const checkbox = getClickableCheckbox(candidate);
       if (isProcessResultCheckbox(checkbox)) unique.set(checkbox, checkbox);
     });
@@ -211,7 +258,7 @@
         <button type="button" data-select-count="10" title="Selecionar proximos 10 resultados">10</button>
         <button type="button" data-select-count="25" title="Selecionar proximos 25 resultados">25</button>
         <button type="button" data-select-count="50" title="Selecionar proximos 50 resultados">50</button>
-        <button type="button" class="tm-attus-primary" data-select-count="all" title="Selecionar todo o resultado visivel">Resultado</button>
+        <button type="button" class="tm-attus-primary" data-select-count="100" title="Selecionar proximos 100 resultados">100</button>
       </div>
       <div class="tm-attus-action-row">
         <button type="button" data-action="refresh" title="Atualizar contagem">Atualizar</button>
@@ -257,11 +304,36 @@
     });
   }
 
+  function dispatchPointerOrMouse(target, pointerType, mouseType) {
+    if (typeof PointerEvent === 'function') {
+      target.dispatchEvent(new PointerEvent(pointerType, { bubbles: true, cancelable: true, pointerType: 'mouse' }));
+      return;
+    }
+
+    target.dispatchEvent(new MouseEvent(mouseType, { bubbles: true, cancelable: true, view: window }));
+  }
+
   function clickCheckbox(checkbox) {
-    const target = getClickableCheckbox(checkbox);
+    const card = checkbox.closest('pd-processo-card');
+    const cardComponent = getProcessCardComponent(card);
+    if (cardComponent && cardComponent.checkboxChange && typeof cardComponent.checkboxChange.emit === 'function') {
+      const checked = !Boolean(cardComponent.isProcessoSelecionado);
+      cardComponent.checkboxChange.emit({ checked, source: checkbox });
+      cardComponent.isProcessoSelecionado = checked;
+      if (cardComponent.changeDetectorRef && typeof cardComponent.changeDetectorRef.detectChanges === 'function') {
+        cardComponent.changeDetectorRef.detectChanges();
+      }
+      card && card.dispatchEvent(new CustomEvent('tm-attus-processo-selecionado', { bubbles: true, detail: { checked } }));
+      return;
+    }
+
+    const target = checkbox.closest('mat-checkbox,.mat-checkbox,.mat-mdc-checkbox,[role="checkbox"],label') || getClickableCheckbox(checkbox);
+    dispatchPointerOrMouse(target, 'pointerdown', 'mousedown');
     target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+    dispatchPointerOrMouse(target, 'pointerup', 'mouseup');
     target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
     target.click();
+    target.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
   }
 
   async function clickMany(checkboxes, shouldClick) {
