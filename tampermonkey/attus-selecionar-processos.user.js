@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ATTUS - Selecionar Processos
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-29.01
+// @version      2026-06-29.02
 // @description  Adiciona um painel flutuante para selecionar rapidamente os cards visiveis do resultado de consulta de processos.
 // @author       Fabricio
 // @compatible   edge
@@ -54,7 +54,7 @@
   }
 
   function getClickableCheckbox(element) {
-    const root = element.closest('mat-checkbox,.mat-checkbox,.mat-mdc-checkbox,.mdc-checkbox,label') || element;
+    const root = element.closest('mat-checkbox,.mat-checkbox,.mat-mdc-checkbox,.mdc-checkbox,.mat-pseudo-checkbox,[role="checkbox"],mat-list-option,label') || element;
     return root.querySelector('input[type="checkbox"]') || root;
   }
 
@@ -64,9 +64,12 @@
     return Boolean(
       (input && input.checked) ||
       root.getAttribute('aria-checked') === 'true' ||
+      root.getAttribute('aria-selected') === 'true' ||
       root.classList.contains('mat-checkbox-checked') ||
       root.classList.contains('mat-mdc-checkbox-checked') ||
-      root.classList.contains('mdc-checkbox--selected')
+      root.classList.contains('mdc-checkbox--selected') ||
+      root.classList.contains('mat-pseudo-checkbox-checked') ||
+      root.querySelector('.mat-pseudo-checkbox-checked')
     );
   }
 
@@ -77,7 +80,8 @@
       (input && input.disabled) ||
       root.getAttribute('aria-disabled') === 'true' ||
       root.classList.contains('mat-checkbox-disabled') ||
-      root.classList.contains('mat-mdc-checkbox-disabled')
+      root.classList.contains('mat-mdc-checkbox-disabled') ||
+      root.classList.contains('mat-pseudo-checkbox-disabled')
     );
   }
 
@@ -110,7 +114,9 @@
       '.mat-checkbox',
       '.mat-mdc-checkbox',
       '.mdc-checkbox',
+      '.mat-pseudo-checkbox',
       '[role="checkbox"]',
+      'mat-list-option',
     ].join(',')));
 
     const unique = new Map();
@@ -145,9 +151,6 @@
         background: #ffffff;
         color: #1f2937;
         font: 600 12px/1.25 Arial, sans-serif;
-      }
-      #${PANEL_ID}[data-hidden="true"] {
-        display: none;
       }
       #${PANEL_ID} .tm-attus-row {
         display: grid;
@@ -307,11 +310,13 @@
     const checked = checkboxes.filter((checkbox) => isChecked(checkbox)).length;
     const unchecked = checkboxes.length - checked;
 
-    panel.dataset.hidden = checkboxes.length ? 'false' : 'true';
+    panel.dataset.hidden = 'false';
     setButtonsDisabled(!checkboxes.length || busy);
 
     if (!checkboxes.length) {
-      setStatus('Abra uma consulta de processos para selecionar resultados.');
+      setStatus(isProcessesPage()
+        ? 'Painel ativo. Nenhum checkbox de processo detectado ainda.'
+        : 'Painel ativo. Abra a tela de Processos para selecionar resultados.');
       return;
     }
 
