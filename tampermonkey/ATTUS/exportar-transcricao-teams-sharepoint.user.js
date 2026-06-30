@@ -7,8 +7,8 @@
 // @match        *://*.sharepoint.com/*
 // @match        *://*.microsoftstream.com/*
 // @match        *://teams.microsoft.com/*
-// @updateURL    https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/exportar-transcricao-teams-sharepoint.user.js
-// @downloadURL  https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/exportar-transcricao-teams-sharepoint.user.js
+// @updateURL    https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/exportar-transcricao-teams-sharepoint.user.js
+// @downloadURL  https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/exportar-transcricao-teams-sharepoint.user.js
 // @grant        none
 // ==/UserScript==
 

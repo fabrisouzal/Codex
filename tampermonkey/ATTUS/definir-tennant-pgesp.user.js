@@ -13,8 +13,8 @@
 // @include      https://attus.pge.sp.gov.br/*
 // @include      https://pgesp.attus.ai/*
 // @run-at       document-idle
-// @updateURL    https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/definir-tennant-pgesp.user.js
-// @downloadURL  https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/definir-tennant-pgesp.user.js
+// @updateURL    https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/definir-tennant-pgesp.user.js
+// @downloadURL  https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/definir-tennant-pgesp.user.js
 // @grant        unsafeWindow
 // ==/UserScript==
 

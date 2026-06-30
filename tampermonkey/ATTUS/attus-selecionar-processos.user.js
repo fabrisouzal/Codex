@@ -13,8 +13,8 @@
 // @include      https://attus.pge.sp.gov.br/*
 // @include      https://pgesp.attus.ai/*
 // @run-at       document-idle
-// @updateURL    https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/attus-selecionar-processos.user.js
-// @downloadURL  https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/attus-selecionar-processos.user.js
+// @updateURL    https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/attus-selecionar-processos.user.js
+// @downloadURL  https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/attus-selecionar-processos.user.js
 // @grant        none
 // ==/UserScript==
 
