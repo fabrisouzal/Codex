@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ATTUS - Selecionar Processos
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-30.02
-// @description  Adiciona um painel flutuante para selecionar rapidamente os cards visiveis do resultado de consulta de processos.
+// @version      2026-06-30.03
+// @description  Adiciona uma barra integrada para selecionar em lote os cards visiveis de processos no ATTUS.
 // @author       Fabricio
 // @compatible   edge
 // @match        https://attus.pge.sp.gov.br/*
@@ -21,368 +21,212 @@
 (function () {
   'use strict';
 
-  const PANEL_ID = 'tm-attus-selecionar-processos';
-  const STYLE_ID = `${PANEL_ID}-style`;
-  const UPDATE_DELAY_MS = 160;
-  const CLICK_DELAY_MS = 45;
+  const BAR_ID = 'tm-attus-selecionar-processos';
+  const STYLE_ID = `${BAR_ID}-style`;
+  const CLICK_DELAY_MS = 85;
+  const UPDATE_DELAY_MS = 180;
   const PROCESS_TEXT_RE = /\bProcesso eletr|\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b|\b\d{4}\.\d{2}\.\d{6}\b/i;
 
-  let updateTimer = 0;
   let busy = false;
-
-  function isVisible(element) {
-    if (!element || !(element instanceof Element)) return false;
-    const style = window.getComputedStyle(element);
-    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) return false;
-    const rect = element.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0 && rect.bottom >= 0 && rect.top <= window.innerHeight;
-  }
+  let updateTimer = 0;
 
   function textOf(element) {
     return (element && element.textContent ? element.textContent : '').replace(/\s+/g, ' ').trim();
   }
 
-  function isProcessesPage() {
-    const pathLooksRight = /process/i.test(location.pathname + location.hash + location.search);
-    const titleLooksRight = Array.from(document.querySelectorAll('h1,h2,h3,[class*="title"],[class*="titulo"]'))
-      .some((node) => /^Processos\b/i.test(textOf(node)));
-    return pathLooksRight || titleLooksRight || /Processos recentes/i.test(document.body ? document.body.textContent : '');
+  function isVisible(element) {
+    if (!element || !(element instanceof Element)) return false;
+    const rect = element.getBoundingClientRect();
+    const style = window.getComputedStyle(element);
+    return rect.width > 0 &&
+      rect.height > 0 &&
+      rect.bottom >= 0 &&
+      rect.top <= window.innerHeight &&
+      style.display !== 'none' &&
+      style.visibility !== 'hidden';
   }
 
-  function getMainRoot() {
+  function isProcessesPage() {
+    if (!document.body) return false;
+    const routeLooksRight = /process/i.test(`${location.pathname}${location.hash}${location.search}`);
+    const headingLooksRight = Array.from(document.querySelectorAll('h1,h2,h3'))
+      .some((heading) => /^Processos\b/i.test(textOf(heading)));
+    return routeLooksRight || headingLooksRight || /Processos recentes|Processos encontrados/i.test(document.body.textContent || '');
+  }
+
+  function getPageHost() {
     return document.querySelector('main,[role="main"],mat-sidenav-content,.mat-sidenav-content,.content,.app-content') || document.body;
   }
 
-  function getAngularComponent(element, predicate) {
-    if (!element) return null;
+  function getHeaderAnchor() {
+    const headings = Array.from(document.querySelectorAll('h1,h2,h3'))
+      .filter((heading) => /^Processos\b/i.test(textOf(heading)));
+    if (headings.length) return headings[0];
 
-    try {
-      if (window.ng && typeof window.ng.getComponent === 'function') {
-        const component = window.ng.getComponent(element);
-        if (component && predicate(component)) return component;
-      }
-    } catch (error) {
-      console.debug('[ATTUS Selecionar Processos] ng.getComponent indisponivel.', error);
-    }
-
-    const contextKey = Object.keys(element).find((key) => key.startsWith('__ngContext__'));
-    const context = contextKey ? element[contextKey] : element.__ngContext__;
-    if (!context || typeof context.length !== 'number') return null;
-
-    return findAngularObject(context, predicate);
+    const recent = Array.from(document.querySelectorAll('body *'))
+      .find((element) => /^Processos (recentes|encontrados)/i.test(textOf(element)));
+    return recent || getPageHost().firstElementChild || document.body;
   }
 
-  function findAngularObject(root, predicate) {
-    const queue = [{ value: root, depth: 0 }];
-    const seen = new Set();
-    let visited = 0;
-
-    while (queue.length && visited < 2500) {
-      const { value, depth } = queue.shift();
-      visited += 1;
-
-      if (!value || (typeof value !== 'object' && typeof value !== 'function')) continue;
-      if (seen.has(value)) continue;
-      seen.add(value);
-
-      try {
-        if (predicate(value)) return value;
-      } catch (_) {}
-
-      if (depth >= 7) continue;
-      if (value === window || value === document || value instanceof Node) continue;
-
-      const keys = Array.isArray(value)
-        ? value.map((_, index) => index)
-        : Object.keys(value).slice(0, 80);
-
-      for (const key of keys) {
-        let child;
-        try { child = value[key]; } catch (_) { continue; }
-        if (child && (typeof child === 'object' || typeof child === 'function')) {
-          queue.push({ value: child, depth: depth + 1 });
-        }
-      }
-    }
-
-    return null;
-  }
-
-  function getAngularComponentInAncestors(element, predicate) {
-    let current = element;
-    for (let depth = 0; current && current !== document.body && depth < 24; depth += 1) {
-      const component = getAngularComponent(current, predicate);
-      if (component) return component;
-      current = current.parentElement;
-    }
-    return null;
-  }
-
-  function getProcessCardComponent(card) {
-    return getAngularComponentInAncestors(card, (component) => (
-      component &&
-      Object.prototype.hasOwnProperty.call(component, 'processo') &&
-      Object.prototype.hasOwnProperty.call(component, 'checkboxChange') &&
-      component.checkboxChange &&
-      typeof component.checkboxChange.emit === 'function'
-    ));
-  }
-
-  function getProcessListComponent(element) {
-    return getAngularComponentInAncestors(element, (component) => (
-      component &&
-      Array.isArray(component.processosSelecionados) &&
-      typeof component.adicionarProcesso === 'function' &&
-      typeof component.removerProcesso === 'function'
-    ));
-  }
-
-  function getProcessFromCard(card) {
-    const cardComponent = getProcessCardComponent(card);
-    if (cardComponent && cardComponent.processo) return cardComponent.processo;
-
-    const component = getAngularComponentInAncestors(card, (candidate) => (
-      candidate &&
-      candidate.processo &&
-      (candidate.processo.id || candidate.processo.numero || candidate.processo.pasta)
-    ));
-    return component ? component.processo : null;
-  }
-
-  function runDetectChanges(component) {
-    if (component && component.changeDetectorRef && typeof component.changeDetectorRef.markForCheck === 'function') {
-      component.changeDetectorRef.markForCheck();
-    }
-    if (component && component.changeDetectorRef && typeof component.changeDetectorRef.detectChanges === 'function') {
-      component.changeDetectorRef.detectChanges();
-    }
-  }
-
-  function runAngularRefresh(card, listComponent) {
-    runDetectChanges(listComponent);
-    runDetectChanges(getProcessCardComponent(card));
-
-    const container = card && card.closest('pd-lista-processos,pd-list-container,main');
-    const containerComponent = getAngularComponentInAncestors(container, (component) => (
-      component && typeof component === 'object' && component.changeDetectorRef
-    ));
-    runDetectChanges(containerComponent);
-
-    document.body.dispatchEvent(new Event('mousemove', { bubbles: true }));
-    window.dispatchEvent(new Event('resize'));
-  }
-
-  function isProcessSelectedInList(listComponent, processo) {
-    if (!listComponent || !processo) return false;
-    if (typeof listComponent.isProcessoSelecionado === 'function') {
-      try { return Boolean(listComponent.isProcessoSelecionado(processo)); } catch (_) {}
-    }
-
-    return listComponent.processosSelecionados.some((selected) => (
-      selected === processo ||
-      (selected && processo && selected.id != null && selected.id === processo.id) ||
-      (selected && processo && selected.numero && selected.numero === processo.numero)
-    ));
-  }
-
-  function getClickableCheckbox(element) {
-    const root = element.closest('mat-checkbox,.mat-checkbox,.mat-mdc-checkbox,.mdc-checkbox,.mat-pseudo-checkbox,[role="checkbox"],mat-list-option,label') || element;
-    return root.matches('input[type="checkbox"]') ? root : root;
-  }
-
-  function getCheckboxInside(element) {
-    if (!element) return null;
-    if (element.matches('input[type="checkbox"],mat-checkbox,.mat-checkbox,.mat-mdc-checkbox,.mdc-checkbox,.mat-pseudo-checkbox,[role="checkbox"],mat-list-option,label')) {
-      return getClickableCheckbox(element);
-    }
-
-    const inner = element.querySelector([
+  function getCardCheckbox(card) {
+    return card.querySelector([
       'mat-checkbox',
       '.mat-checkbox',
       '.mat-mdc-checkbox',
       '.mdc-checkbox',
-      '.mat-pseudo-checkbox',
-      '[role="checkbox"]',
       'input[type="checkbox"]',
-      '.mat-checkbox-inner-container',
-      '.mat-checkbox-frame',
-      '.mat-mdc-checkbox-touch-target',
-      '.mdc-checkbox__native-control',
-      '.mdc-checkbox__background',
+      '[role="checkbox"]',
       '[class*="checkbox"]',
     ].join(','));
-    return inner ? getClickableCheckbox(inner) : null;
   }
 
-  function isChecked(element) {
-    const card = element.closest('pd-processo-card');
-    const listComponent = getProcessListComponent(card || element);
-    const processo = card ? getProcessFromCard(card) : null;
-    if (listComponent && processo) return isProcessSelectedInList(listComponent, processo);
-
-    const cardComponent = getProcessCardComponent(card);
-    if (cardComponent) return Boolean(cardComponent.isProcessoSelecionado);
-
-    const input = element.matches('input[type="checkbox"]') ? element : element.querySelector('input[type="checkbox"]');
-    const root = element.closest('mat-checkbox,.mat-checkbox,.mat-mdc-checkbox,.mdc-checkbox') || element;
-    return Boolean(
-      (input && input.checked) ||
-      root.getAttribute('aria-checked') === 'true' ||
-      root.getAttribute('aria-selected') === 'true' ||
-      root.classList.contains('mat-checkbox-checked') ||
-      root.classList.contains('mat-mdc-checkbox-checked') ||
-      root.classList.contains('mdc-checkbox--selected') ||
-      root.classList.contains('mat-pseudo-checkbox-checked') ||
-      root.querySelector('.mat-pseudo-checkbox-checked')
-    );
-  }
-
-  function isDisabled(element) {
-    const card = element.closest('pd-processo-card');
-    const cardComponent = getProcessCardComponent(card);
-    if (cardComponent && cardComponent.permiteSelecionarProcesso === false) return true;
-
-    const input = element.matches('input[type="checkbox"]') ? element : element.querySelector('input[type="checkbox"]');
-    const root = element.closest('mat-checkbox,.mat-checkbox,.mat-mdc-checkbox,.mdc-checkbox') || element;
-    return Boolean(
-      (input && input.disabled) ||
-      root.getAttribute('aria-disabled') === 'true' ||
-      root.classList.contains('mat-checkbox-disabled') ||
-      root.classList.contains('mat-mdc-checkbox-disabled') ||
-      root.classList.contains('mat-pseudo-checkbox-disabled')
-    );
-  }
-
-  function getResultBlock(element) {
-    let current = element;
-    for (let depth = 0; current && current !== document.body && depth < 24; depth += 1) {
-      const txt = textOf(current);
-      if (PROCESS_TEXT_RE.test(txt)) return current;
-      current = current.parentElement;
-    }
-    return element.closest('mat-card,.mat-card,.mat-mdc-card,[class*="card"],[class*="resultado"],[class*="result"]');
-  }
-
-  function isProcessResultCheckbox(element) {
-    if (!element || isDisabled(element)) return false;
-    if (element.closest(`#${PANEL_ID}`)) return false;
-
-    const block = getResultBlock(element);
-    if (!isVisible(block)) return false;
-    if (!block || block.closest('nav,aside,header,mat-sidenav,.mat-sidenav')) return false;
-    return PROCESS_TEXT_RE.test(textOf(block));
-  }
-
-  function isProcessTargetVisible(element) {
-    if (!element) return false;
-    const card = element.closest('pd-processo-card');
-    if (card) return isVisible(card);
-    return isVisible(element) || isVisible(getResultBlock(element));
-  }
-
-  function getProcessCheckboxes() {
-    if (!document.body || !isProcessesPage()) return [];
-
-    const root = getMainRoot();
-    const cardCandidates = [];
-    Array.from(root.querySelectorAll('pd-processo-card')).forEach((card) => {
-      cardCandidates.push(card);
-      const inner = getCheckboxInside(card);
-      if (inner) cardCandidates.push(inner);
-    });
-    const cards = cardCandidates.filter((checkbox) => isProcessResultCheckbox(checkbox));
-
-    const candidates = Array.from(root.querySelectorAll([
-      'input[type="checkbox"]',
-      'mat-checkbox',
-      '.mat-checkbox',
-      '.mat-mdc-checkbox',
-      '.mdc-checkbox',
-      '.mat-pseudo-checkbox',
+  function getClickableTarget(checkbox) {
+    if (!checkbox) return null;
+    return checkbox.querySelector([
       '.mat-checkbox-inner-container',
-      '.mat-checkbox-frame',
       '.mat-mdc-checkbox-touch-target',
       '.mdc-checkbox__native-control',
       '.mdc-checkbox__background',
-      '[role="checkbox"]',
-      'mat-list-option',
-      '[class*="checkbox"]',
-    ].join(',')));
+      'input[type="checkbox"]',
+    ].join(',')) || checkbox;
+  }
 
-    const unique = new Map();
-    cards.concat(candidates).forEach((candidate) => {
-      const checkbox = getClickableCheckbox(candidate);
-      if (isProcessResultCheckbox(checkbox)) unique.set(checkbox, checkbox);
-    });
+  function getCards() {
+    if (!document.body || !isProcessesPage()) return [];
 
-    return Array.from(unique.values()).sort((a, b) => {
-      const ar = a.getBoundingClientRect();
-      const br = b.getBoundingClientRect();
-      return ar.top - br.top || ar.left - br.left;
-    });
+    const cards = Array.from(document.querySelectorAll('pd-processo-card'))
+      .filter((card) => isVisible(card) && PROCESS_TEXT_RE.test(textOf(card)) && getCardCheckbox(card));
+
+    if (cards.length) return cards;
+
+    return Array.from(getPageHost().querySelectorAll('mat-card,.mat-card,.mat-mdc-card,[class*="card"]'))
+      .filter((card) => isVisible(card) && PROCESS_TEXT_RE.test(textOf(card)) && getCardCheckbox(card));
+  }
+
+  function getCheckboxState(card) {
+    const checkbox = getCardCheckbox(card);
+    if (!checkbox) return false;
+    const input = checkbox.matches('input[type="checkbox"]') ? checkbox : checkbox.querySelector('input[type="checkbox"]');
+    return Boolean(
+      (input && input.checked) ||
+      checkbox.getAttribute('aria-checked') === 'true' ||
+      checkbox.classList.contains('mat-checkbox-checked') ||
+      checkbox.classList.contains('mat-mdc-checkbox-checked') ||
+      checkbox.classList.contains('mdc-checkbox--selected')
+    );
+  }
+
+  function dispatchMouse(target, type) {
+    target.dispatchEvent(new MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+    }));
+  }
+
+  function dispatchPointer(target, type) {
+    if (typeof PointerEvent !== 'function') return;
+    target.dispatchEvent(new PointerEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      pointerType: 'mouse',
+      isPrimary: true,
+      view: window,
+    }));
+  }
+
+  function setNativeChecked(input, checked) {
+    if (!input) return;
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked');
+    if (descriptor && descriptor.set) descriptor.set.call(input, checked);
+    else input.checked = checked;
+  }
+
+  function clickCardCheckbox(card, desiredChecked) {
+    const checkbox = getCardCheckbox(card);
+    const target = getClickableTarget(checkbox);
+    if (!checkbox || !target) return false;
+
+    card.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, composed: true, view: window }));
+    card.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, composed: true, view: window }));
+    checkbox.classList.add('show');
+    checkbox.style.display = 'flex';
+    checkbox.style.visibility = 'visible';
+    checkbox.style.opacity = '1';
+    checkbox.style.pointerEvents = 'auto';
+
+    dispatchPointer(target, 'pointerover');
+    dispatchMouse(target, 'mouseover');
+    dispatchPointer(target, 'pointerdown');
+    dispatchMouse(target, 'mousedown');
+    dispatchPointer(target, 'pointerup');
+    dispatchMouse(target, 'mouseup');
+    target.click();
+
+    const input = checkbox.matches('input[type="checkbox"]') ? checkbox : checkbox.querySelector('input[type="checkbox"]');
+    if (input && input.checked !== desiredChecked) {
+      setNativeChecked(input, desiredChecked);
+      input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+    }
+
+    checkbox.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+    return true;
   }
 
   function ensureStyle() {
     if (document.getElementById(STYLE_ID)) return;
-
     const style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = `
-      #${PANEL_ID} {
-        position: fixed;
-        right: 18px;
-        bottom: 18px;
-        z-index: 2147483647;
-        width: 238px;
-        padding: 10px;
-        border: 1px solid rgba(34, 45, 66, .18);
-        border-radius: 8px;
-        box-shadow: 0 14px 34px rgba(15, 23, 42, .20);
+      #${BAR_ID} {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        margin: 8px 0 12px 0;
+        padding: 6px;
+        border: 1px solid rgba(84, 74, 210, .20);
+        border-radius: 7px;
         background: #ffffff;
-        color: #1f2937;
-        font: 600 12px/1.25 Arial, sans-serif;
+        box-shadow: 0 4px 14px rgba(20, 24, 44, .10);
+        color: #2f3442;
+        font: 600 12px/1.2 Arial, sans-serif;
       }
-      #${PANEL_ID} .tm-attus-row {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 6px;
-      }
-      #${PANEL_ID} .tm-attus-action-row {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 6px;
-        margin-top: 6px;
-      }
-      #${PANEL_ID} button {
-        height: 30px;
-        min-width: 0;
-        border: 1px solid rgba(79, 70, 229, .22);
+      #${BAR_ID} button {
+        height: 28px;
+        min-width: 38px;
+        border: 1px solid rgba(95, 70, 232, .24);
         border-radius: 6px;
         background: #f7f7ff;
-        color: #4f46e5;
+        color: #513bd0;
         font: 700 12px/1 Arial, sans-serif;
         cursor: pointer;
       }
-      #${PANEL_ID} button:hover {
-        background: #eeeefe;
+      #${BAR_ID} button:hover {
+        background: #eeeeff;
       }
-      #${PANEL_ID} button:disabled {
-        cursor: default;
+      #${BAR_ID} button:disabled {
         opacity: .55;
+        cursor: default;
       }
-      #${PANEL_ID} .tm-attus-primary {
+      #${BAR_ID} .tm-attus-primary {
         background: #5f46e8;
         color: #ffffff;
       }
-      #${PANEL_ID} .tm-attus-primary:hover {
+      #${BAR_ID} .tm-attus-primary:hover {
         background: #513bd0;
       }
-      #${PANEL_ID} .tm-attus-status {
-        margin-top: 8px;
-        min-height: 15px;
+      #${BAR_ID} .tm-attus-separator {
+        width: 1px;
+        height: 20px;
+        background: rgba(84, 74, 210, .18);
+      }
+      #${BAR_ID} .tm-attus-status {
+        min-width: 190px;
         color: #4b5563;
-        font: 600 11px/1.35 Arial, sans-serif;
-        white-space: normal;
+        font: 600 11px/1.25 Arial, sans-serif;
       }
       pd-processo-card mat-checkbox,
       pd-processo-card .mat-checkbox,
@@ -392,42 +236,35 @@
         opacity: 1 !important;
         pointer-events: auto !important;
       }
-      pd-processo-card pd-card-icone.hide {
-        display: none !important;
-      }
     `;
     document.head.appendChild(style);
   }
 
-  function ensurePanel() {
+  function ensureBar() {
     ensureStyle();
 
-    let panel = document.getElementById(PANEL_ID);
-    if (panel) return panel;
+    let bar = document.getElementById(BAR_ID);
+    if (bar && document.body.contains(bar)) return bar;
 
-    panel = document.createElement('div');
-    panel.id = PANEL_ID;
-    panel.innerHTML = `
-      <div class="tm-attus-row">
-        <button type="button" data-select-count="10" title="Selecionar proximos 10 resultados">10</button>
-        <button type="button" data-select-count="25" title="Selecionar proximos 25 resultados">25</button>
-        <button type="button" data-select-count="50" title="Selecionar proximos 50 resultados">50</button>
-        <button type="button" class="tm-attus-primary" data-select-count="100" title="Selecionar proximos 100 resultados">100</button>
-      </div>
-      <div class="tm-attus-action-row">
-        <button type="button" data-action="refresh" title="Atualizar contagem">Atualizar</button>
-        <button type="button" data-action="clear" title="Desmarcar resultados visiveis">Limpar</button>
-      </div>
-      <div class="tm-attus-status" data-role="status">Procurando resultados...</div>
+    bar = document.createElement('div');
+    bar.id = BAR_ID;
+    bar.innerHTML = `
+      <button type="button" data-count="10" title="Selecionar proximos 10 processos">10</button>
+      <button type="button" data-count="25" title="Selecionar proximos 25 processos">25</button>
+      <button type="button" data-count="50" title="Selecionar proximos 50 processos">50</button>
+      <button type="button" class="tm-attus-primary" data-count="100" title="Selecionar proximos 100 processos">100</button>
+      <span class="tm-attus-separator"></span>
+      <button type="button" data-action="clear" title="Desmarcar processos visiveis">Limpar</button>
+      <button type="button" data-action="refresh" title="Atualizar contagem">Atualizar</button>
+      <span class="tm-attus-status" data-role="status">Carregando...</span>
     `;
 
-    panel.addEventListener('click', (event) => {
+    bar.addEventListener('click', (event) => {
       const button = event.target.closest('button');
       if (!button || busy) return;
 
-      const count = button.dataset.selectCount;
-      if (count) {
-        selectNext(count === 'all' ? Infinity : Number(count));
+      if (button.dataset.count) {
+        selectBatch(Number(button.dataset.count));
         return;
       }
 
@@ -436,152 +273,100 @@
         return;
       }
 
-      if (button.dataset.action === 'refresh') {
-        updatePanel();
-      }
+      if (button.dataset.action === 'refresh') updateBar();
     });
 
-    document.body.appendChild(panel);
-    return panel;
+    const anchor = getHeaderAnchor();
+    if (anchor && anchor.parentElement) {
+      anchor.insertAdjacentElement('afterend', bar);
+    } else {
+      document.body.prepend(bar);
+    }
+
+    return bar;
+  }
+
+  function setBusy(value) {
+    busy = value;
+    const bar = ensureBar();
+    bar.querySelectorAll('button').forEach((button) => {
+      button.disabled = busy;
+    });
   }
 
   function setStatus(message) {
-    const panel = ensurePanel();
-    const status = panel.querySelector('[data-role="status"]');
+    const status = ensureBar().querySelector('[data-role="status"]');
     if (status) status.textContent = message;
   }
 
-  function setButtonsDisabled(disabled) {
-    const panel = ensurePanel();
-    panel.querySelectorAll('button').forEach((button) => {
-      button.disabled = disabled;
-    });
-  }
+  async function runBatch(cards, desiredChecked) {
+    setBusy(true);
+    let changed = 0;
 
-  function dispatchPointerOrMouse(target, pointerType, mouseType) {
-    if (typeof PointerEvent === 'function') {
-      target.dispatchEvent(new PointerEvent(pointerType, { bubbles: true, cancelable: true, pointerType: 'mouse' }));
-      return;
-    }
+    for (const card of cards) {
+      if (!document.contains(card) || !isVisible(card)) continue;
+      const current = getCheckboxState(card);
+      if (current === desiredChecked) continue;
 
-    target.dispatchEvent(new MouseEvent(mouseType, { bubbles: true, cancelable: true, view: window }));
-  }
-
-  function clickCheckbox(checkbox) {
-    const card = checkbox.closest('pd-processo-card');
-    const listComponent = getProcessListComponent(card || checkbox);
-    const processo = card ? getProcessFromCard(card) : null;
-    if (listComponent && processo) {
-      const checked = isProcessSelectedInList(listComponent, processo);
-      if (checked) {
-        listComponent.removerProcesso(processo);
-      } else {
-        listComponent.adicionarProcesso(processo);
-      }
-      runAngularRefresh(card, listComponent);
-      card && card.dispatchEvent(new CustomEvent('tm-attus-processo-selecionado', { bubbles: true, detail: { checked: !checked } }));
-      return;
-    }
-
-    const cardComponent = getProcessCardComponent(card);
-    if (cardComponent && cardComponent.checkboxChange && typeof cardComponent.checkboxChange.emit === 'function') {
-      const checked = !Boolean(cardComponent.isProcessoSelecionado);
-      cardComponent.checkboxChange.emit({ checked, source: checkbox });
-      cardComponent.isProcessoSelecionado = checked;
-      runAngularRefresh(card, getProcessListComponent(card || checkbox));
-      card && card.dispatchEvent(new CustomEvent('tm-attus-processo-selecionado', { bubbles: true, detail: { checked } }));
-      return;
-    }
-
-    const target = getCheckboxInside(checkbox) || checkbox.closest('mat-checkbox,.mat-checkbox,.mat-mdc-checkbox,[role="checkbox"],label') || getClickableCheckbox(checkbox);
-    dispatchPointerOrMouse(target, 'pointerdown', 'mousedown');
-    target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
-    dispatchPointerOrMouse(target, 'pointerup', 'mouseup');
-    target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
-    target.click();
-    target.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-  }
-
-  async function clickMany(checkboxes, shouldClick) {
-    busy = true;
-    setButtonsDisabled(true);
-
-    let clicked = 0;
-    for (const checkbox of checkboxes) {
-      if (!document.contains(checkbox) || !isProcessTargetVisible(checkbox)) continue;
-      if (!shouldClick(checkbox)) continue;
-      clickCheckbox(checkbox);
-      clicked += 1;
-      setStatus(`Aplicando selecao... ${clicked}/${checkboxes.length}`);
+      card.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      if (clickCardCheckbox(card, desiredChecked)) changed += 1;
+      setStatus(`Aplicando... ${changed}/${cards.length}`);
       await new Promise((resolve) => setTimeout(resolve, CLICK_DELAY_MS));
     }
 
-    busy = false;
-    setButtonsDisabled(false);
-    updatePanel();
-    return clicked;
+    setBusy(false);
+    updateBar();
   }
 
-  function selectNext(limit) {
-    const unchecked = getProcessCheckboxes().filter((checkbox) => !isChecked(checkbox)).slice(0, limit);
-    if (!unchecked.length) {
-      setStatus('Nenhum resultado visivel pendente.');
+  function selectBatch(count) {
+    const cards = getCards().filter((card) => !getCheckboxState(card)).slice(0, count);
+    if (!cards.length) {
+      setStatus('Nenhum processo visivel pendente.');
       return;
     }
-
-    clickMany(unchecked, (checkbox) => !isChecked(checkbox));
+    runBatch(cards, true);
   }
 
   function clearVisible() {
-    const checked = getProcessCheckboxes().filter((checkbox) => isChecked(checkbox));
-    if (!checked.length) {
-      setStatus('Nenhum resultado visivel marcado.');
+    const cards = getCards().filter((card) => getCheckboxState(card));
+    if (!cards.length) {
+      setStatus('Nenhum processo visivel marcado.');
       return;
     }
-
-    clickMany(checked, (checkbox) => isChecked(checkbox));
+    runBatch(cards, false);
   }
 
-  function updatePanel() {
-    const panel = ensurePanel();
-    const checkboxes = getProcessCheckboxes();
-    const checked = checkboxes.filter((checkbox) => isChecked(checkbox)).length;
-    const unchecked = checkboxes.length - checked;
-
-    panel.dataset.hidden = 'false';
-    setButtonsDisabled(!checkboxes.length || busy);
-
-    if (!checkboxes.length) {
-      setStatus(isProcessesPage()
-        ? 'Painel ativo. Nenhum checkbox de processo detectado ainda.'
-        : 'Painel ativo. Abra a tela de Processos para selecionar resultados.');
-      return;
-    }
-
-    const cards = document.querySelectorAll('pd-processo-card').length;
-    const listComponent = getProcessListComponent(checkboxes[0]);
-    const mode = listComponent ? 'store ATTUS' : 'clique';
-    setStatus(`${checked}/${checkboxes.length} marcados. Cards: ${cards}. Modo: ${mode}. Pendentes: ${unchecked}.`);
+  function updateBar() {
+    if (!document.body || !isProcessesPage()) return;
+    const bar = ensureBar();
+    const cards = getCards();
+    const checked = cards.filter((card) => getCheckboxState(card)).length;
+    const pending = cards.length - checked;
+    bar.querySelectorAll('button').forEach((button) => {
+      button.disabled = busy || !cards.length;
+    });
+    setStatus(cards.length
+      ? `${checked}/${cards.length} marcados. Pendentes: ${pending}.`
+      : 'Nenhum card de processo detectado.');
   }
 
   function scheduleUpdate() {
     window.clearTimeout(updateTimer);
-    updateTimer = window.setTimeout(updatePanel, UPDATE_DELAY_MS);
+    updateTimer = window.setTimeout(updateBar, UPDATE_DELAY_MS);
   }
 
   function start() {
-    ensurePanel();
-    updatePanel();
+    ensureBar();
+    updateBar();
 
     const observer = new MutationObserver(scheduleUpdate);
     observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
-
     window.addEventListener('scroll', scheduleUpdate, true);
     window.addEventListener('hashchange', scheduleUpdate);
     window.addEventListener('popstate', scheduleUpdate);
     window.setInterval(scheduleUpdate, 2500);
 
-    console.info('[ATTUS Selecionar Processos] Monitor iniciado.');
+    console.info('[ATTUS Selecionar Processos] Barra integrada iniciada.');
   }
 
   if (document.readyState === 'loading') {
