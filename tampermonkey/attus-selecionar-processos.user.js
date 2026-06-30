@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ATTUS - Selecionar Processos
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-30.01
+// @version      2026-06-30.02
 // @description  Adiciona um painel flutuante para selecionar rapidamente os cards visiveis do resultado de consulta de processos.
 // @author       Fabricio
 // @compatible   edge
@@ -69,9 +69,40 @@
     const context = contextKey ? element[contextKey] : element.__ngContext__;
     if (!context || typeof context.length !== 'number') return null;
 
-    for (let index = 0; index < context.length; index += 1) {
-      const value = context[index];
-      if (value && typeof value === 'object' && predicate(value)) return value;
+    return findAngularObject(context, predicate);
+  }
+
+  function findAngularObject(root, predicate) {
+    const queue = [{ value: root, depth: 0 }];
+    const seen = new Set();
+    let visited = 0;
+
+    while (queue.length && visited < 2500) {
+      const { value, depth } = queue.shift();
+      visited += 1;
+
+      if (!value || (typeof value !== 'object' && typeof value !== 'function')) continue;
+      if (seen.has(value)) continue;
+      seen.add(value);
+
+      try {
+        if (predicate(value)) return value;
+      } catch (_) {}
+
+      if (depth >= 7) continue;
+      if (value === window || value === document || value instanceof Node) continue;
+
+      const keys = Array.isArray(value)
+        ? value.map((_, index) => index)
+        : Object.keys(value).slice(0, 80);
+
+      for (const key of keys) {
+        let child;
+        try { child = value[key]; } catch (_) { continue; }
+        if (child && (typeof child === 'object' || typeof child === 'function')) {
+          queue.push({ value: child, depth: depth + 1 });
+        }
+      }
     }
 
     return null;
@@ -119,9 +150,26 @@
   }
 
   function runDetectChanges(component) {
+    if (component && component.changeDetectorRef && typeof component.changeDetectorRef.markForCheck === 'function') {
+      component.changeDetectorRef.markForCheck();
+    }
     if (component && component.changeDetectorRef && typeof component.changeDetectorRef.detectChanges === 'function') {
       component.changeDetectorRef.detectChanges();
     }
+  }
+
+  function runAngularRefresh(card, listComponent) {
+    runDetectChanges(listComponent);
+    runDetectChanges(getProcessCardComponent(card));
+
+    const container = card && card.closest('pd-lista-processos,pd-list-container,main');
+    const containerComponent = getAngularComponentInAncestors(container, (component) => (
+      component && typeof component === 'object' && component.changeDetectorRef
+    ));
+    runDetectChanges(containerComponent);
+
+    document.body.dispatchEvent(new Event('mousemove', { bubbles: true }));
+    window.dispatchEvent(new Event('resize'));
   }
 
   function isProcessSelectedInList(listComponent, processo) {
@@ -430,7 +478,7 @@
       } else {
         listComponent.adicionarProcesso(processo);
       }
-      runDetectChanges(listComponent);
+      runAngularRefresh(card, listComponent);
       card && card.dispatchEvent(new CustomEvent('tm-attus-processo-selecionado', { bubbles: true, detail: { checked: !checked } }));
       return;
     }
@@ -440,7 +488,7 @@
       const checked = !Boolean(cardComponent.isProcessoSelecionado);
       cardComponent.checkboxChange.emit({ checked, source: checkbox });
       cardComponent.isProcessoSelecionado = checked;
-      runDetectChanges(cardComponent);
+      runAngularRefresh(card, getProcessListComponent(card || checkbox));
       card && card.dispatchEvent(new CustomEvent('tm-attus-processo-selecionado', { bubbles: true, detail: { checked } }));
       return;
     }
