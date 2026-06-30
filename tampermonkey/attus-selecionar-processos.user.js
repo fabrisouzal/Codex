@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ATTUS - Selecionar Processos
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-29.05
+// @version      2026-06-30.01
 // @description  Adiciona um painel flutuante para selecionar rapidamente os cards visiveis do resultado de consulta de processos.
 // @author       Fabricio
 // @compatible   edge
@@ -225,6 +225,13 @@
     return PROCESS_TEXT_RE.test(textOf(block));
   }
 
+  function isProcessTargetVisible(element) {
+    if (!element) return false;
+    const card = element.closest('pd-processo-card');
+    if (card) return isVisible(card);
+    return isVisible(element) || isVisible(getResultBlock(element));
+  }
+
   function getProcessCheckboxes() {
     if (!document.body || !isProcessesPage()) return [];
 
@@ -328,6 +335,17 @@
         color: #4b5563;
         font: 600 11px/1.35 Arial, sans-serif;
         white-space: normal;
+      }
+      pd-processo-card mat-checkbox,
+      pd-processo-card .mat-checkbox,
+      pd-processo-card .mat-mdc-checkbox {
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        pointer-events: auto !important;
+      }
+      pd-processo-card pd-card-icone.hide {
+        display: none !important;
       }
     `;
     document.head.appendChild(style);
@@ -442,7 +460,7 @@
 
     let clicked = 0;
     for (const checkbox of checkboxes) {
-      if (!document.contains(checkbox) || !isVisible(checkbox)) continue;
+      if (!document.contains(checkbox) || !isProcessTargetVisible(checkbox)) continue;
       if (!shouldClick(checkbox)) continue;
       clickCheckbox(checkbox);
       clicked += 1;
@@ -492,7 +510,10 @@
       return;
     }
 
-    setStatus(`${checked}/${checkboxes.length} visiveis marcados. Pendentes: ${unchecked}.`);
+    const cards = document.querySelectorAll('pd-processo-card').length;
+    const listComponent = getProcessListComponent(checkboxes[0]);
+    const mode = listComponent ? 'store ATTUS' : 'clique';
+    setStatus(`${checked}/${checkboxes.length} marcados. Cards: ${cards}. Modo: ${mode}. Pendentes: ${unchecked}.`);
   }
 
   function scheduleUpdate() {
