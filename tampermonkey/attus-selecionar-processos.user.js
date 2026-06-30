@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ATTUS - Selecionar Processos
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-30.03
-// @description  Adiciona uma barra integrada para selecionar em lote os cards visiveis de processos no ATTUS.
+// @version      2026-06-30.04
+// @description  Adiciona uma barra isolada para selecionar em lote os cards visiveis de processos no ATTUS.
 // @author       Fabricio
 // @compatible   edge
 // @match        https://attus.pge.sp.gov.br/*
@@ -182,51 +182,13 @@
     style.id = STYLE_ID;
     style.textContent = `
       #${BAR_ID} {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        margin: 8px 0 12px 0;
-        padding: 6px;
-        border: 1px solid rgba(84, 74, 210, .20);
-        border-radius: 7px;
-        background: #ffffff;
-        box-shadow: 0 4px 14px rgba(20, 24, 44, .10);
-        color: #2f3442;
-        font: 600 12px/1.2 Arial, sans-serif;
-      }
-      #${BAR_ID} button {
-        height: 28px;
-        min-width: 38px;
-        border: 1px solid rgba(95, 70, 232, .24);
-        border-radius: 6px;
-        background: #f7f7ff;
-        color: #513bd0;
-        font: 700 12px/1 Arial, sans-serif;
-        cursor: pointer;
-      }
-      #${BAR_ID} button:hover {
-        background: #eeeeff;
-      }
-      #${BAR_ID} button:disabled {
-        opacity: .55;
-        cursor: default;
-      }
-      #${BAR_ID} .tm-attus-primary {
-        background: #5f46e8;
-        color: #ffffff;
-      }
-      #${BAR_ID} .tm-attus-primary:hover {
-        background: #513bd0;
-      }
-      #${BAR_ID} .tm-attus-separator {
-        width: 1px;
-        height: 20px;
-        background: rgba(84, 74, 210, .18);
-      }
-      #${BAR_ID} .tm-attus-status {
-        min-width: 190px;
-        color: #4b5563;
-        font: 600 11px/1.25 Arial, sans-serif;
+        all: initial;
+        position: fixed !important;
+        top: 104px !important;
+        left: 292px !important;
+        right: 24px !important;
+        z-index: 2147483647 !important;
+        pointer-events: none !important;
       }
       pd-processo-card mat-checkbox,
       pd-processo-card .mat-checkbox,
@@ -243,22 +205,85 @@
   function ensureBar() {
     ensureStyle();
 
-    let bar = document.getElementById(BAR_ID);
-    if (bar && document.body.contains(bar)) return bar;
+    let host = document.getElementById(BAR_ID);
+    if (!host) {
+      host = document.createElement('div');
+      host.id = BAR_ID;
+      document.body.appendChild(host);
+    }
 
-    bar = document.createElement('div');
-    bar.id = BAR_ID;
-    bar.innerHTML = `
-      <button type="button" data-count="10" title="Selecionar proximos 10 processos">10</button>
-      <button type="button" data-count="25" title="Selecionar proximos 25 processos">25</button>
-      <button type="button" data-count="50" title="Selecionar proximos 50 processos">50</button>
-      <button type="button" class="tm-attus-primary" data-count="100" title="Selecionar proximos 100 processos">100</button>
-      <span class="tm-attus-separator"></span>
-      <button type="button" data-action="clear" title="Desmarcar processos visiveis">Limpar</button>
-      <button type="button" data-action="refresh" title="Atualizar contagem">Atualizar</button>
-      <span class="tm-attus-status" data-role="status">Carregando...</span>
+    host.style.cssText = [
+      'all:initial',
+      'position:fixed',
+      'top:104px',
+      'left:292px',
+      'right:24px',
+      'z-index:2147483647',
+      'pointer-events:none',
+    ].join(';');
+
+    const root = host.shadowRoot || host.attachShadow({ mode: 'open' });
+    let bar = root.querySelector('[data-role="bar"]');
+    if (bar) return bar;
+
+    root.innerHTML = `
+      <style>
+        :host { all: initial; }
+        [data-role="bar"] {
+          box-sizing: border-box;
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          width: max-content;
+          max-width: 100%;
+          padding: 6px;
+          border: 1px solid rgba(84, 74, 210, .20);
+          border-radius: 7px;
+          background: #ffffff;
+          box-shadow: 0 8px 24px rgba(20, 24, 44, .18);
+          color: #2f3442;
+          font: 600 12px/1.2 Arial, sans-serif;
+          pointer-events: auto;
+        }
+        button {
+          height: 28px;
+          min-width: 38px;
+          border: 1px solid rgba(95, 70, 232, .24);
+          border-radius: 6px;
+          background: #f7f7ff;
+          color: #513bd0;
+          font: 700 12px/1 Arial, sans-serif;
+          cursor: pointer;
+        }
+        button:hover { background: #eeeeff; }
+        button:disabled { opacity: .55; cursor: default; }
+        .primary { background: #5f46e8; color: #ffffff; }
+        .primary:hover { background: #513bd0; }
+        .separator {
+          width: 1px;
+          height: 20px;
+          background: rgba(84, 74, 210, .18);
+        }
+        .status {
+          min-width: 220px;
+          color: #4b5563;
+          font: 600 11px/1.25 Arial, sans-serif;
+          white-space: nowrap;
+        }
+      </style>
+      <div data-role="bar">
+        <button type="button" data-count="10" title="Selecionar proximos 10 processos">10</button>
+        <button type="button" data-count="25" title="Selecionar proximos 25 processos">25</button>
+        <button type="button" data-count="50" title="Selecionar proximos 50 processos">50</button>
+        <button type="button" class="primary" data-count="100" title="Selecionar proximos 100 processos">100</button>
+        <span class="separator"></span>
+        <button type="button" data-action="clear" title="Desmarcar processos visiveis">Limpar</button>
+        <button type="button" data-action="refresh" title="Atualizar contagem">Atualizar</button>
+        <span class="status" data-role="status">Carregando...</span>
+      </div>
     `;
 
+    bar = root.querySelector('[data-role="bar"]');
     bar.addEventListener('click', (event) => {
       const button = event.target.closest('button');
       if (!button || busy) return;
@@ -276,13 +301,6 @@
       if (button.dataset.action === 'refresh') updateBar();
     });
 
-    const anchor = getHeaderAnchor();
-    if (anchor && anchor.parentElement) {
-      anchor.insertAdjacentElement('afterend', bar);
-    } else {
-      document.body.prepend(bar);
-    }
-
     return bar;
   }
 
@@ -295,7 +313,9 @@
   }
 
   function setStatus(message) {
-    const status = ensureBar().querySelector('[data-role="status"]');
+    const status = document.getElementById(BAR_ID)
+      ?.shadowRoot
+      ?.querySelector('[data-role="status"]');
     if (status) status.textContent = message;
   }
 
@@ -337,7 +357,7 @@
   }
 
   function updateBar() {
-    if (!document.body || !isProcessesPage()) return;
+    if (!document.body) return;
     const bar = ensureBar();
     const cards = getCards();
     const checked = cards.filter((card) => getCheckboxState(card)).length;
@@ -347,7 +367,7 @@
     });
     setStatus(cards.length
       ? `${checked}/${cards.length} marcados. Pendentes: ${pending}.`
-      : 'Nenhum card de processo detectado.');
+      : (isProcessesPage() ? 'Nenhum card de processo detectado.' : 'Abra a tela de Processos.'));
   }
 
   function scheduleUpdate() {
