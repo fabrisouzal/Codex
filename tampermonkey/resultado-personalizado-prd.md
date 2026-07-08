@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Resultado Personalizado.user.js`
 
 Arquivo publicado: `tampermonkey/resultado-personalizado.user.js`
 
-Versao do script: `2026-06-18.01`
+Versao do script: `2026-07-08.01`
 
-Versao do documento: `2026-06-18.01`
+Versao do documento: `2026-07-08.01`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/resultado-personalizado.user.js`
@@ -127,8 +127,23 @@ Comportamentos existentes:
 - Resumo da estrutura do resultado.
 - Apoio a analise rapida do retorno.
 - Jornada visual mais clara para explorar os dados sem sair do grid.
+- Protecao automatica para resultados grandes, pausando calculos pesados quando a quantidade de linhas visiveis ultrapassa o limite configurado.
+- Botao `Calcular mesmo assim` para executar os insights sob demanda quando o usuario realmente precisar.
 
-### 5.9 Exportacao e Copia
+### 5.9 Resultado Grande e Performance
+
+O script possui uma jornada especifica para consultas com grande volume de linhas.
+
+Comportamentos existentes:
+
+- Renderizacao parcial da grade para reduzir consumo de DOM e evitar travamentos do navegador.
+- Limite inicial configuravel de linhas renderizadas.
+- Barra de estado informando quantas linhas estao visiveis na grade e quantas permanecem em memoria.
+- Acoes `Mostrar mais` e `Mostrar tudo` para carregar linhas adicionais sob demanda.
+- Confirmacao antes de exibir ou exportar volumes grandes quando houver risco de lentidao.
+- Preservacao das linhas nao renderizadas em memoria para exportacao completa.
+
+### 5.10 Exportacao e Copia
 
 O script melhora as formas de reutilizar os dados retornados.
 
@@ -141,8 +156,12 @@ Comportamentos existentes:
 - Copiar tabela ou grid.
 - Exportar em CSV, HTML, TXT, XLSX e imagem JPG, conforme disponibilidade do recurso.
 - Gerar o CSV com o separador salvo pelo usuario: ponto e virgula, virgula, tabulacao ou barra vertical.
+- Separar exportacoes em `visivel` e `completo`.
+- Exportacao `visivel`: respeita filtros aplicados e linhas atualmente exibidas.
+- Exportacao `completo`: ignora filtros da tela e inclui tambem linhas preservadas em memoria pela renderizacao parcial.
+- Toasters informam quantas linhas foram exportadas em cada acao.
 
-### 5.10 Resize e Layout
+### 5.11 Resize e Layout
 
 A area de resultado e a area do editor possuem ajustes de tamanho independentes.
 
@@ -152,7 +171,7 @@ Comportamentos existentes:
 - Melhor aproveitamento do espaco vertical.
 - Reducao de conflito entre escrita da query e leitura do resultado.
 
-### 5.11 Configuracoes
+### 5.12 Configuracoes
 
 O painel de configuracoes organiza preferencias do grid e da experiencia visual.
 
@@ -163,6 +182,7 @@ Comportamentos existentes:
 - Restaurar padrao.
 - Ajustes visuais preservando o tema atual.
 - Preferencia persistente para o separador utilizado na exportacao CSV.
+- Preferencias de performance para resultado grande: linhas renderizadas inicialmente, lote de `Mostrar mais` e limite para pausar insights automaticos.
 - Comandos agrupados para reduzir confusao e excesso de botoes.
 - `Salvar JPG` e `Reset completo` ocultos por padrao na toolbar, com possibilidade de reativacao no painel.
 
@@ -200,6 +220,9 @@ A instalacao nova e a acao `Restaurar padrao` devem carregar a configuracao base
 - Tamanho do toast: grande.
 - Tempo do toast: 2,5 segundos.
 - Separador do CSV: ponto e virgula (`;`).
+- Linhas renderizadas inicialmente: 2.000.
+- Mostrar mais por vez: 2.000 linhas.
+- Pausar insights automaticos acima de: 5.000 linhas visiveis.
 - Copiar grid como tabela alinhada: ligado.
 - Confirmar reset completo: ligado.
 - Botoes da toolbar: todos ligados, exceto `Salvar JPG` e `Reset completo`.

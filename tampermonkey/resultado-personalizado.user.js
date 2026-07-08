@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Resultado Personalizado
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-25.01
-// @description  Jornada "Resultado Personalizado": Grid em acordeon, filtros, seleção, copiar grid/tabela/célula/coluna/linha e exportar CSV/HTML/TXT/XLSX/JPG.
+// @version      2026-07-08.01
+// @description  Jornada "Resultado Personalizado": Grid em acordeon, filtros, insights sob demanda, exportacao visivel/completa e performance para resultados grandes.
 // @compatible   edge
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
 // @match        https://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -24,7 +24,10 @@
   var GRID_HEIGHT_DEFAULT = 420;
   var GRID_MIN_HEIGHT = 200;
   var GRID_MAX_HEIGHT_VH = 82;
-  var CONFIG_SCHEMA_VERSION = 2;
+  var CONFIG_SCHEMA_VERSION = 3;
+  var LARGE_RESULT_ROW_THRESHOLD_DEFAULT = 5000;
+  var GRID_DISPLAY_ROW_LIMIT_DEFAULT = 2000;
+  var GRID_DISPLAY_ROW_BATCH_DEFAULT = 2000;
 
   var COPY_AS_TABLE = true;
   var COPY_PAD_EXTRA = 0;
@@ -56,6 +59,7 @@
 
   var actionBarEl = null;
   var summaryPanelEl = null;
+  var rowLimitBarEl = null;
   var contextMenuEl = null;
   var accordionEl = null;
   var accHeaderEl = null;
@@ -67,6 +71,7 @@
   var userConfig = null;
   var startScheduled = false;
   var summaryRefreshTimer = null;
+  var forceInsightsCompute = false;
 
   var StorageService = {
     get: function (key) {
@@ -428,6 +433,9 @@
       toastScale: 1.6,
       toastDurationMs: 2500,
       csvSeparator: CSV_SEPARATOR_DEFAULT,
+      largeResultRowThreshold: LARGE_RESULT_ROW_THRESHOLD_DEFAULT,
+      gridDisplayRowLimit: GRID_DISPLAY_ROW_LIMIT_DEFAULT,
+      gridDisplayRowBatch: GRID_DISPLAY_ROW_BATCH_DEFAULT,
       autoRefreshInsightsOnFilter: true,
       confirmReset: true,
       hiddenToolbarButtons: {
@@ -463,6 +471,26 @@
     };
     var separator = userConfig && userConfig.csvSeparator;
     return allowed[separator] ? separator : CSV_SEPARATOR_DEFAULT;
+  }
+
+  function getConfigNumber(key, fallback, minValue) {
+    var value = userConfig && userConfig[key] != null ? Number(userConfig[key]) : Number(fallback);
+    if (!isFinite(value)) value = Number(fallback);
+    value = Math.round(value);
+    if (minValue != null) value = Math.max(minValue, value);
+    return value;
+  }
+
+  function getLargeResultRowThreshold() {
+    return getConfigNumber("largeResultRowThreshold", LARGE_RESULT_ROW_THRESHOLD_DEFAULT, 500);
+  }
+
+  function getGridDisplayRowLimit() {
+    return getConfigNumber("gridDisplayRowLimit", GRID_DISPLAY_ROW_LIMIT_DEFAULT, 200);
+  }
+
+  function getGridDisplayRowBatch() {
+    return getConfigNumber("gridDisplayRowBatch", GRID_DISPLAY_ROW_BATCH_DEFAULT, 200);
   }
 
   function isToolbarButtonHidden(btnKey) {
@@ -584,6 +612,11 @@
       + ".tm-bar-fill{height:100%;background:linear-gradient(90deg,#185abd,#56a3ff);border-radius:999px;}\n"
       + ".tm-empty-state{border:1px dashed #b7c5d8;border-radius:8px;background:#fff;padding:12px;color:#607089;}\n"
       + ".tm-summary-note{margin-top:9px;color:#68758a;font-size:11px;}\n"
+      + ".tm-summary-counts{margin-top:6px;font-size:12px;color:#20385f;}\n"
+      + ".tm-row-limit-bar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:6px 0 0 0;padding:8px 10px;border:1px solid #d99a31;border-radius:8px;background:#fff7e6;color:#6b3d00;font-size:12px;}\n"
+      + ".tm-row-limit-bar .tm-row-limit-msg{flex:1 1 260px;min-width:0;}\n"
+      + ".tm-row-limit-bar button{font-family:" + UI_FONT_FAMILY + ";font-size:12px;padding:4px 10px;border-radius:6px;border:1px solid #d99a31;background:#fff;color:#6b3d00;cursor:pointer;white-space:nowrap;}\n"
+      + ".tm-row-limit-bar button:hover{background:#fff2d9;}\n"
       + ".tm-cfg-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000000;display:flex;align-items:center;justify-content:center;}\n"
       + ".tm-cfg-modal{font-family:" + UI_FONT_FAMILY + ";font-size:" + UI_FONT_SIZE_PX + "px;width:min(920px,94vw);max-height:88vh;background:#fff;border-radius:10px;box-shadow:0 12px 44px rgba(0,0,0,.32);overflow:hidden;display:flex;flex-direction:column;color:#1f2937;}\n"
       + ".tm-cfg-head{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;background:linear-gradient(#f7fbff,#eaf1f9);border-bottom:1px solid #cfdbe8;}\n"
@@ -933,6 +966,7 @@
       inputs[i].value = "";
     }
     applyTableFilters(table, filtRow);
+    refreshRowLimitBar(table);
     refreshSummaryPanel();
     return hadFilter;
   }
@@ -1424,6 +1458,106 @@
 
     installContextMenuHooks(table);
     applyHiddenColumns(table);
+    applyGridRowLimit(table);
+  }
+
+  function getTotalDataRowCount(table) {
+    if (!table || !table.rows) return 0;
+    return Math.max(0, table.rows.length - 2) + (table.__tmHiddenRowsBuffer ? table.__tmHiddenRowsBuffer.length : 0);
+  }
+
+  function applyGridRowLimit(table) {
+    if (!table || !table.rows) return;
+    var limit = getGridDisplayRowLimit();
+    var dataRowCount = table.rows.length - 2;
+    if (dataRowCount <= limit) {
+      refreshRowLimitBar(table);
+      return;
+    }
+
+    var toDetach = Array.prototype.slice.call(table.rows, 2 + limit);
+    table.__tmHiddenRowsBuffer = table.__tmHiddenRowsBuffer || [];
+    for (var i = 0; i < toDetach.length; i++) {
+      var row = toDetach[i];
+      if (row.parentNode) row.parentNode.removeChild(row);
+      table.__tmHiddenRowsBuffer.push(row);
+    }
+    refreshRowLimitBar(table);
+  }
+
+  function revealBufferedRows(table, count) {
+    if (!table || !table.__tmHiddenRowsBuffer || !table.__tmHiddenRowsBuffer.length) return;
+    var body = table.tBodies && table.tBodies[0] ? table.tBodies[0] : table;
+    var n = (count === Infinity) ? table.__tmHiddenRowsBuffer.length : Math.min(count, table.__tmHiddenRowsBuffer.length);
+    var toInsert = table.__tmHiddenRowsBuffer.splice(0, n);
+    for (var i = 0; i < toInsert.length; i++) body.appendChild(toInsert[i]);
+    if (table.rows[1] && table.rows[1].classList.contains("filter-row")) applyTableFilters(table, table.rows[1]);
+    applyHiddenColumns(table);
+    applyPinnedRows(table);
+    updateIndexColumn(table);
+    refreshRowLimitBar(table);
+    refreshSummaryPanel();
+    showToast(fmtNum(toInsert.length) + " linha(s) adicionada(s) a grade");
+  }
+
+  function ensureRowLimitBar() {
+    if (!accBodyEl) return null;
+    if (rowLimitBarEl && document.body.contains(rowLimitBarEl)) return rowLimitBarEl;
+    rowLimitBarEl = document.createElement("div");
+    rowLimitBarEl.className = "tm-row-limit-bar";
+    rowLimitBarEl.style.display = "none";
+    accBodyEl.appendChild(rowLimitBarEl);
+    return rowLimitBarEl;
+  }
+
+  function refreshRowLimitBar(table) {
+    var bar = ensureRowLimitBar();
+    if (!bar) return;
+
+    var bufferCount = (table && table.__tmHiddenRowsBuffer) ? table.__tmHiddenRowsBuffer.length : 0;
+    if (!bufferCount) {
+      bar.style.display = "none";
+      bar.innerHTML = "";
+      return;
+    }
+
+    var shownCount = Math.max(0, table.rows.length - 2);
+    var totalCount = shownCount + bufferCount;
+    var batch = getGridDisplayRowBatch();
+
+    bar.style.display = "";
+    bar.innerHTML = "";
+
+    var msg = document.createElement("span");
+    msg.className = "tm-row-limit-msg";
+    msg.textContent = "Mostrando " + fmtNum(shownCount) + " de " + fmtNum(totalCount) + " linhas na grade. O restante fica em memoria para evitar travamentos; use Exportar completo para baixar tudo.";
+    bar.appendChild(msg);
+
+    var btnMore = document.createElement("button");
+    btnMore.type = "button";
+    btnMore.textContent = "Mostrar mais " + fmtNum(Math.min(batch, bufferCount));
+    btnMore.addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      revealBufferedRows(table, batch);
+    }, true);
+    bar.appendChild(btnMore);
+
+    var btnAll = document.createElement("button");
+    btnAll.type = "button";
+    btnAll.textContent = "Mostrar tudo";
+    btnAll.addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (totalCount > getLargeResultRowThreshold()) {
+        var ok = window.confirm(
+          "Mostrar todas as " + fmtNum(totalCount) + " linhas na grade pode deixar o navegador lento.\n\nDeseja continuar mesmo assim?"
+        );
+        if (!ok) return;
+      }
+      revealBufferedRows(table, Infinity);
+    }, true);
+    bar.appendChild(btnAll);
   }
 
   function getHeaderNormByColIndex(table, colIndex) {
@@ -1690,9 +1824,13 @@
     var includeHeader = (opts.includeHeader !== false);
     var includeFilterRow = !!opts.includeFilterRow;
     var includeIndexCol = !!opts.includeIndexCol;
+    var ignoreFilter = !!opts.ignoreFilter;
 
     if (!table) return [];
     var rows = Array.prototype.slice.call(table.rows);
+    if (ignoreFilter && table.__tmHiddenRowsBuffer && table.__tmHiddenRowsBuffer.length) {
+      rows = rows.concat(table.__tmHiddenRowsBuffer);
+    }
     var out = [];
 
     for (var i = 0; i < rows.length; i++) {
@@ -1704,13 +1842,13 @@
       if (isFilter && !includeFilterRow) continue;
 
       var isDataRow = (!isHeader && !isFilter);
-      if (isDataRow && row.style.display === "none") continue;
+      if (isDataRow && !ignoreFilter && row.style.display === "none") continue;
 
       var cells = Array.prototype.slice.call(row.cells);
       var cellsToUse = includeIndexCol ? cells : cells.slice(1);
       var line = [];
       for (var c = 0; c < cellsToUse.length; c++) {
-        line.push(isHeader ? getHeaderText(cellsToUse[c]) : ((cellsToUse[c].innerText || "").trim()));
+        line.push(isHeader ? getHeaderText(cellsToUse[c]) : ((cellsToUse[c].textContent || "").trim()));
       }
       out.push(line);
     }
@@ -1804,6 +1942,35 @@
       panel.innerHTML = "<div class='tm-summary-title'>Subtotais e insights</div><div class='tm-summary-note'>Sem dados para resumir.</div>";
       return;
     }
+
+    var totalDataRows = getTotalDataRowCount(table);
+    var cheapVisibleCount = 0;
+    if (table.rows && table.rows.length > 2) {
+      for (var cv = 2; cv < table.rows.length; cv++) {
+        if (table.rows[cv] && table.rows[cv].style.display !== "none") cheapVisibleCount++;
+      }
+    }
+    var countsNote = "<div class='tm-summary-counts'><b>Total no resultado:</b> " + fmtNum(totalDataRows)
+      + " &nbsp;|&nbsp; <b>Visivel na grade:</b> " + fmtNum(cheapVisibleCount) + "</div>";
+
+    if (cheapVisibleCount === 0) {
+      panel.innerHTML = "<div class='tm-summary-title'>Subtotais e insights</div>" + countsNote
+        + "<div class='tm-summary-note'>Nenhuma linha visivel com os filtros atuais.</div>";
+      return;
+    }
+
+    if (cheapVisibleCount > getLargeResultRowThreshold() && !forceInsightsCompute) {
+      panel.innerHTML = "<div class='tm-summary-title'>Subtotais e insights</div>" + countsNote
+        + "<div class='tm-summary-note'>Resultado grande: o calculo automatico de subtotais e estatisticas foi pausado para nao travar o navegador. "
+        + "<button type='button' id='tm-force-insights-btn'>Calcular mesmo assim</button></div>";
+      var forceBtn = panel.querySelector("#tm-force-insights-btn");
+      if (forceBtn) forceBtn.addEventListener("click", function () {
+        forceInsightsCompute = true;
+        refreshSummaryPanel();
+      }, true);
+      return;
+    }
+    forceInsightsCompute = false;
 
     var rows = getExportRows(table, { includeHeader: true, includeFilterRow: false, includeIndexCol: false });
     if (rows.length <= 1) {
@@ -1974,6 +2141,7 @@
       statusPairs: statusPairs,
       topStatus: topStatus,
       dupCount: dupCount,
+      totalRows: totalDataRows,
       table: table
     });
   }
@@ -2025,6 +2193,7 @@
 
   function renderModernInsightPanel(panel, ctx) {
     var visibleRows = ctx.visibleRows || 0;
+    var totalRows = ctx.totalRows || visibleRows;
     var totalCols = ctx.totalCols || 0;
     var cellBase = Math.max(1, visibleRows * totalCols);
     var densityPct = pctNum(ctx.nonEmpty || 0, cellBase);
@@ -2041,6 +2210,7 @@
 
     var reportLines = [
       "Insights do resultado",
+      "Total no resultado: " + fmtNum(totalRows),
       "Linhas visiveis: " + fmtNum(visibleRows),
       "Colunas visiveis: " + fmtNum(totalCols),
       "Preenchimento: " + fmtNum(densityPct) + "%",
@@ -2066,6 +2236,7 @@
     html.push("<div class='tm-insight-body'>");
     html.push("<div class='tm-insight-view " + (currentView === "overview" ? "tm-active" : "") + "'>");
     html.push("<div class='tm-kpi-grid'>");
+    html.push("<div class='tm-kpi'><div class='tm-kpi-label'>Total no resultado</div><div class='tm-kpi-value'>" + fmtNum(totalRows) + "</div><div class='tm-kpi-note'>inclui linhas em memoria</div></div>");
     html.push("<div class='tm-kpi'><div class='tm-kpi-label'>Linhas visiveis</div><div class='tm-kpi-value'>" + fmtNum(visibleRows) + "</div><div class='tm-kpi-note'>apos filtros aplicados</div></div>");
     html.push("<div class='tm-kpi'><div class='tm-kpi-label'>Colunas visiveis</div><div class='tm-kpi-value'>" + fmtNum(totalCols) + "</div><div class='tm-kpi-note'>considerando ocultas</div></div>");
     html.push("<div class='tm-kpi'><div class='tm-kpi-label'>Preenchimento</div><div class='tm-kpi-value'>" + fmtNum(densityPct) + "%</div><div class='tm-kpi-note'>" + fmtNum(ctx.nonEmpty || 0) + " celulas com valor</div></div>");
@@ -2225,6 +2396,7 @@
     });
 
     downloadBlob("consulta_" + tsStamp() + ".csv", "text/csv;charset=utf-8;", "\uFEFF" + csvLines.join("\n"));
+    showToast("CSV visivel exportado com " + fmtNum(rows.length - 1) + " linha(s)");
   }
 
   function exportHTMLRespectingFilter() {
@@ -2255,6 +2427,7 @@
     html.push("</tbody></table></body></html>");
 
     downloadBlob("consulta_" + tsStamp() + ".html", "text/html;charset=utf-8;", html.join(""));
+    showToast("HTML visivel exportado com " + fmtNum(rows.length - 1) + " linha(s)");
   }
 
   function exportTXTRespectingFilter() {
@@ -2275,6 +2448,7 @@
       : rows.map(function (r) { return r.join(COPY_SEPARATOR_DEFAULT); }).join("\n");
 
     downloadBlob("consulta_" + tsStamp() + ".txt", "text/plain;charset=utf-8;", txt);
+    showToast("TXT visivel exportado com " + fmtNum(rows.length - 1) + " linha(s)");
   }
 
   function exportXLSXRespectingFilter() {
@@ -2301,6 +2475,123 @@
       var ws = window.XLSX.utils.aoa_to_sheet(rows);
       window.XLSX.utils.book_append_sheet(wb, ws, "Consulta");
       window.XLSX.writeFile(wb, "consulta_" + tsStamp() + ".xlsx");
+      showToast("XLSX visivel exportado com " + fmtNum(rows.length - 1) + " linha(s)");
+    } catch (e) {
+      alert("Falha ao gerar XLSX: " + (e && e.message ? e.message : e));
+    }
+  }
+
+  function confirmLargeExportAll(totalDataRows) {
+    if (totalDataRows <= getLargeResultRowThreshold()) return true;
+    return window.confirm(
+      "O resultado tem " + fmtNum(totalDataRows) + " linhas no total.\n\n" +
+      "Exportar completo ignora filtros da tela e pode consumir bastante memoria do navegador. Deseja continuar?"
+    );
+  }
+
+  function getTableForFullExport() {
+    var divScroll = document.getElementById("divScroll");
+    if (!divScroll) {
+      alert("Nao ha area de resultado (divScroll).");
+      return null;
+    }
+
+    var table = divScroll.querySelector("table");
+    if (!table) {
+      alert("Nao ha dados para exportar.");
+      return null;
+    }
+
+    if (!table.classList.contains("enhanced-grid")) processTable(table);
+    if (!table.rows || table.rows.length <= 2) {
+      alert("Nao ha linhas no resultado para exportar.");
+      return null;
+    }
+    if (!confirmLargeExportAll(getTotalDataRowCount(table))) return null;
+    return table;
+  }
+
+  function exportCSVAll() {
+    var table = getTableForFullExport();
+    if (!table) return;
+
+    var rows = getExportRows(table, { includeHeader: true, includeFilterRow: false, includeIndexCol: false, ignoreFilter: true });
+    if (rows.length <= 1) return alert("Nao ha linhas para exportar.");
+
+    var separator = getCsvSeparator();
+    var csvLines = rows.map(function (r) {
+      return r.map(function (cell) {
+        var v = (cell || "").replace(/"/g, '""');
+        return '"' + v + '"';
+      }).join(separator);
+    });
+
+    downloadBlob("consulta_completa_" + tsStamp() + ".csv", "text/csv;charset=utf-8;", "\uFEFF" + csvLines.join("\n"));
+    showToast("CSV completo exportado com " + fmtNum(rows.length - 1) + " linha(s)");
+  }
+
+  function exportHTMLAll() {
+    var table = getTableForFullExport();
+    if (!table) return;
+
+    var rows = getExportRows(table, { includeHeader: true, includeFilterRow: false, includeIndexCol: false, ignoreFilter: true });
+    if (rows.length <= 1) return alert("Nao ha linhas para exportar.");
+
+    var html = [];
+    html.push("<!doctype html><html><head><meta charset='utf-8'>");
+    html.push("<title>Export consulta completa</title>");
+    html.push("<style>table{border-collapse:collapse;font-family:" + UI_FONT_FAMILY + ";font-size:" + UI_FONT_SIZE_PX + "px}th,td{border:1px solid #ccc;padding:6px 8px;white-space:nowrap}th{background:#f4f4f4}</style>");
+    html.push("</head><body>");
+    html.push("<table><thead><tr>");
+    for (var c = 0; c < rows[0].length; c++) html.push("<th>" + escapeHtml(rows[0][c]) + "</th>");
+    html.push("</tr></thead><tbody>");
+    for (var r = 1; r < rows.length; r++) {
+      html.push("<tr>");
+      for (var cc = 0; cc < rows[r].length; cc++) html.push("<td>" + escapeHtml(rows[r][cc]) + "</td>");
+      html.push("</tr>");
+    }
+    html.push("</tbody></table></body></html>");
+
+    downloadBlob("consulta_completa_" + tsStamp() + ".html", "text/html;charset=utf-8;", html.join(""));
+    showToast("HTML completo exportado com " + fmtNum(rows.length - 1) + " linha(s)");
+  }
+
+  function exportTXTAll() {
+    var table = getTableForFullExport();
+    if (!table) return;
+
+    var rows = getExportRows(table, { includeHeader: true, includeFilterRow: false, includeIndexCol: false, ignoreFilter: true });
+    if (rows.length <= 1) return alert("Nao ha linhas para exportar.");
+
+    var asTable = userConfig ? !!userConfig.copyAsTable : COPY_AS_TABLE;
+    var txt = asTable
+      ? buildAlignedTable(rows, COPY_SEPARATOR_DEFAULT)
+      : rows.map(function (r) { return r.join(COPY_SEPARATOR_DEFAULT); }).join("\n");
+
+    downloadBlob("consulta_completa_" + tsStamp() + ".txt", "text/plain;charset=utf-8;", txt);
+    showToast("TXT completo exportado com " + fmtNum(rows.length - 1) + " linha(s)");
+  }
+
+  function exportXLSXAll() {
+    var table = getTableForFullExport();
+    if (!table) return;
+
+    var rows = getExportRows(table, { includeHeader: true, includeFilterRow: false, includeIndexCol: false, ignoreFilter: true });
+    if (rows.length <= 1) return alert("Nao ha linhas para exportar.");
+
+    if (!window.XLSX || !window.XLSX.utils) {
+      return alert(
+        "Biblioteca XLSX nao carregou (possivel bloqueio de CDN).\n\n" +
+        "Verifique se o acesso ao cdn.jsdelivr.net esta liberado, ou solicite uma versao offline ao administrador."
+      );
+    }
+
+    try {
+      var wb = window.XLSX.utils.book_new();
+      var ws = window.XLSX.utils.aoa_to_sheet(rows);
+      window.XLSX.utils.book_append_sheet(wb, ws, "Consulta");
+      window.XLSX.writeFile(wb, "consulta_completa_" + tsStamp() + ".xlsx");
+      showToast("XLSX completo exportado com " + fmtNum(rows.length - 1) + " linha(s)");
     } catch (e) {
       alert("Falha ao gerar XLSX: " + (e && e.message ? e.message : e));
     }
@@ -2528,6 +2819,7 @@
       delete table.dataset.tmSortDir;
       renderHeaderSortControls(table);
       applyHiddenColumns(table);
+      refreshRowLimitBar(table);
     }
 
     StorageService.remove(GRID_SHELL_KEY_SIZE);
@@ -2792,6 +3084,27 @@
     var body = document.createElement("div");
     body.className = "tm-cfg-body";
 
+    body.appendChild(mkCard("Resultado grande", "Controle quando a grade deve priorizar desempenho.", [
+      mkSelect("Linhas renderizadas inicialmente", "gridDisplayRowLimit", [
+        { value: 1000, label: "1.000 linhas" },
+        { value: 2000, label: "2.000 linhas" },
+        { value: 5000, label: "5.000 linhas" },
+        { value: 10000, label: "10.000 linhas" }
+      ]),
+      mkSelect("Mostrar mais por vez", "gridDisplayRowBatch", [
+        { value: 500, label: "500 linhas" },
+        { value: 1000, label: "1.000 linhas" },
+        { value: 2000, label: "2.000 linhas" },
+        { value: 5000, label: "5.000 linhas" }
+      ]),
+      mkSelect("Pausar insights acima de", "largeResultRowThreshold", [
+        { value: 2000, label: "2.000 linhas" },
+        { value: 5000, label: "5.000 linhas" },
+        { value: 10000, label: "10.000 linhas" },
+        { value: 20000, label: "20.000 linhas" }
+      ])
+    ], "tm-primary"));
+
     body.appendChild(mkCard("Experiência", "Controles que afetam leitura, filtros e seleção.", [
       mkCheck("Mostrar painel de insights", "showInsights"),
       mkCheck("Mostrar insights de status", "showStatusInsights"),
@@ -3034,10 +3347,14 @@
       });
     }, "copy"), "copy_row", "Copiar linha");
 
-    var btnCsv = tagBtn(mkBtn("CSV", function () { exportCSVRespectingFilter(); }, "export"), "exp_csv", "Exportar CSV");
-    var btnHtml = tagBtn(mkBtn("HTML", function () { exportHTMLRespectingFilter(); }, "export"), "exp_html", "Exportar HTML");
-    var btnTxt = tagBtn(mkBtn("TXT", function () { exportTXTRespectingFilter(); }, "export"), "exp_txt", "Exportar TXT");
-    var btnXlsx = tagBtn(mkBtn("XLSX", function () { exportXLSXRespectingFilter(); }, "export"), "exp_xlsx", "Exportar XLSX");
+    var btnCsv = tagBtn(mkBtn("CSV visivel", function () { exportCSVRespectingFilter(); }, "export"), "exp_csv", "Exportar CSV visivel");
+    var btnHtml = tagBtn(mkBtn("HTML visivel", function () { exportHTMLRespectingFilter(); }, "export"), "exp_html", "Exportar HTML visivel");
+    var btnTxt = tagBtn(mkBtn("TXT visivel", function () { exportTXTRespectingFilter(); }, "export"), "exp_txt", "Exportar TXT visivel");
+    var btnXlsx = tagBtn(mkBtn("XLSX visivel", function () { exportXLSXRespectingFilter(); }, "export"), "exp_xlsx", "Exportar XLSX visivel");
+    var btnCsvAll = tagBtn(mkBtn("CSV completo", function () { exportCSVAll(); }, "export"), "exp_csv_all", "Exportar CSV completo");
+    var btnHtmlAll = tagBtn(mkBtn("HTML completo", function () { exportHTMLAll(); }, "export"), "exp_html_all", "Exportar HTML completo");
+    var btnTxtAll = tagBtn(mkBtn("TXT completo", function () { exportTXTAll(); }, "export"), "exp_txt_all", "Exportar TXT completo");
+    var btnXlsxAll = tagBtn(mkBtn("XLSX completo", function () { exportXLSXAll(); }, "export"), "exp_xlsx_all", "Exportar XLSX completo");
     var btnCols = tagBtn(mkBtn("Colunas", function () {
       var table = getMainTableForResize();
       if (!table) return alert("Tabela não encontrada.");
@@ -3125,7 +3442,8 @@
     }
 
     actionBarEl.appendChild(mkGroup("Copiar", [btnCopyGrid, btnCopyTable, btnCopyCell, btnCopyCol, btnCopyRow]));
-    actionBarEl.appendChild(mkGroup("Exportar", [btnCsv, btnHtml, btnTxt, btnXlsx, btnSaveJPG, btnCopyImg]));
+    actionBarEl.appendChild(mkGroup("Exportar visivel", [btnCsv, btnHtml, btnTxt, btnXlsx, btnSaveJPG, btnCopyImg]));
+    actionBarEl.appendChild(mkGroup("Exportar completo", [btnCsvAll, btnHtmlAll, btnTxtAll, btnXlsxAll]));
     actionBarEl.appendChild(mkGroup("Colunas", [btnCols, btnColsAll, btnClearFilters, btnRenameCol, btnSplitDate]));
     actionBarEl.appendChild(mkGroup("Layout", [resizeBlock, btnReset]));
 
