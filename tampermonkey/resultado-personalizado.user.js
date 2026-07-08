@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Resultado Personalizado
 // @namespace    http://tampermonkey.net/
-// @version      2026-07-08.02
+// @version      2026-07-08.03
 // @description  Jornada "Resultado Personalizado": Grid em acordeon, filtros, insights sob demanda, exportacao visivel/completa e performance para resultados grandes.
 // @compatible   edge
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -514,7 +514,7 @@
       if (!key) continue;
       btns[i].style.display = isToolbarButtonHidden(key) ? "none" : "";
     }
-    var groups = actionBarEl.querySelectorAll(".tm-group,.tm-menu");
+    var groups = actionBarEl.querySelectorAll(".tm-group,.tm-menu,.tm-copy-actions,.tm-quick-actions");
     for (var g = 0; g < groups.length; g++) {
       var visible = Array.prototype.some.call(groups[g].querySelectorAll("button[data-tm-btn]"), function (btn) {
         return btn.style.display !== "none";
@@ -561,7 +561,8 @@
       + ".tm-acc-body{padding:8px 8px 10px 8px;overflow:visible;}\n"
       + ".tm-acc-body.tm-collapsed{display:none;}\n"
       + ".tm-actionbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;overflow:visible;white-space:nowrap;margin:0 0 8px 0;padding:6px 7px;background:linear-gradient(#f8fbff,#eaf1f9);border-top:1px solid #d7e0eb;border-bottom:1px solid #cfdbe8;box-shadow:inset 0 1px 0 rgba(255,255,255,.8);}\n"
-      + ".tm-actionbar .tm-menu,.tm-actionbar .tm-quick-actions{position:relative;display:inline-flex;align-items:center;gap:5px;flex:0 0 auto;}\n"
+      + ".tm-actionbar .tm-menu,.tm-actionbar .tm-quick-actions,.tm-actionbar .tm-copy-actions{position:relative;display:inline-flex;align-items:center;gap:5px;flex:0 0 auto;}\n"
+      + ".tm-actionbar .tm-copy-actions{padding-right:6px;margin-right:2px;border-right:1px solid #c9d6e5;}\n"
       + ".tm-actionbar .tm-menu-trigger{font-weight:700;min-width:0;}\n"
       + ".tm-actionbar .tm-menu-trigger::after{content:'▾';font-size:10px;margin-left:4px;color:#607089;}\n"
       + ".tm-actionbar .tm-menu.tm-open .tm-menu-trigger,.tm-actionbar .tm-menu:focus-within .tm-menu-trigger{background:linear-gradient(#ffffff,#eaf3ff);border-color:#8fb0d8;}\n"
@@ -2943,7 +2944,7 @@
       for (var b = 0; b < toolbarBtns.length; b++) {
         var btn = toolbarBtns[b];
         var key = btn.dataset.tmBtn;
-        if (!key || key === "cfg") continue;
+        if (!key || key === "cfg" || key === "cfg_panel" || key === "toolbar_toggle") continue;
         var row = document.createElement("label");
         row.className = "tm-cfg-item tm-toggle";
         var cb = document.createElement("input");
@@ -3159,7 +3160,7 @@
       for (var b = 0; b < toolbarBtns.length; b++) {
         var btn = toolbarBtns[b];
         var key = btn.dataset.tmBtn;
-        if (!key || key === "cfg") continue;
+        if (!key || key === "cfg" || key === "cfg_panel" || key === "toolbar_toggle") continue;
 
         var row = document.createElement("label");
         row.className = "tm-cfg-item tm-toggle";
@@ -3433,14 +3434,6 @@
     resizeBlock.appendChild(btnFitW);
     resizeBlock.appendChild(btnFitH);
 
-    var btnConfigPanel = tagBtn(mkBtn("Config", function () {
-      openConfigPanelModern();
-    }, "settings"), "cfg_panel", "Configurações");
-
-    var btnToolbarToggle = tagBtn(mkBtn("Toolbar", function () {
-      toggleResultToolbar();
-    }, "layout"), "toolbar_toggle", "Toolbar ON/OFF");
-
     function closeToolbarMenus(except) {
       if (!actionBarEl) return;
       var menus = actionBarEl.querySelectorAll(".tm-menu.tm-open");
@@ -3499,6 +3492,14 @@
       return wrap;
     }
 
+    function mkCopyActions(items) {
+      var wrap = document.createElement("div");
+      wrap.className = "tm-copy-actions";
+      wrap.setAttribute("aria-label", "Acoes de copia");
+      for (var i = 0; i < items.length; i++) wrap.appendChild(items[i]);
+      return wrap;
+    }
+
     actionBarEl.addEventListener("click", function (e) {
       e.stopPropagation();
     }, true);
@@ -3512,12 +3513,12 @@
       }, true);
     }
 
-    actionBarEl.appendChild(mkMenu("Copiar", [btnCopyGrid, btnCopyTable, btnCopyCell, btnCopyCol, btnCopyRow]));
+    actionBarEl.appendChild(mkCopyActions([btnCopyGrid, btnCopyTable, btnCopyCell, btnCopyCol, btnCopyRow]));
     actionBarEl.appendChild(mkMenu("Exportar visivel", [btnCsv, btnHtml, btnTxt, btnXlsx, btnSaveJPG, btnCopyImg]));
     actionBarEl.appendChild(mkMenu("Exportar completo", [btnCsvAll, btnHtmlAll, btnTxtAll, btnXlsxAll]));
     actionBarEl.appendChild(mkMenu("Colunas", [btnCols, btnColsAll, btnRenameCol, btnSplitDate]));
     actionBarEl.appendChild(mkMenu("Layout", [resizeBlock, btnReset]));
-    actionBarEl.appendChild(mkQuickActions([btnClearFilters, btnConfigPanel, btnToolbarToggle]));
+    actionBarEl.appendChild(mkQuickActions([btnClearFilters]));
 
     applyToolbarButtonVisibility();
 
