@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Editor de Query
 // @namespace    http://tampermonkey.net/
-// @version      2026.06.25.04
+// @version      2026.06.25.05
 // @description  Editor SQL Pro com CodeMirror, ribbon, snippets, configuracoes, import/export SQL e execucao parcial.
 // @compatible   edge
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -1678,20 +1678,15 @@
       ".sql-toolbar input[type='button'],.sql-toolbar button,.sql-toolbar select{height:23px !important;min-height:0 !important;padding:2px 7px !important;font-size:12px !important;line-height:16px !important;cursor:pointer;border-radius:6px;border:1px solid #b7c5d8;background:linear-gradient(#fff,#f7fbff);color:#20385f;}",
       ".sql-toolbar input[type='button']:hover,.sql-toolbar button:hover{background:linear-gradient(#ffffff,#eaf3ff);border-color:#8fb0d8;}",
       ".sql-toolbar select{min-width:128px;}",
-      ".sql-icon-btn{display:inline-flex;align-items:center;gap:4px;color:#20385f;box-shadow:inset 0 1px 0 rgba(255,255,255,.85);white-space:nowrap;}",
-      ".sql-icon-btn .sql-btn-icon{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;flex:0 0 15px;border-radius:4px;background:linear-gradient(135deg,#f7fbff,#dcecff);}",
-      ".sql-icon-btn .sql-btn-icon svg{width:13px;height:13px;display:block;stroke:#185abd;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}",
+      ".sql-icon-btn{display:inline-flex;align-items:center;gap:7px;color:#20385f;box-shadow:inset 0 1px 0 rgba(255,255,255,.85);white-space:nowrap;}",
+      ".sql-icon-btn .sql-btn-icon{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;flex:0 0 18px;background:transparent;}",
+      ".sql-icon-btn .sql-btn-icon svg{width:18px;height:18px;display:block;stroke:#17365f;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;}",
       ".sql-toolbar.sql-hide-icons .sql-btn-icon{display:none !important;}",
-      ".sql-icon-btn.sql-icon-run .sql-btn-icon{background:linear-gradient(135deg,#e8f5e9,#c8e6c9);}",
-      ".sql-icon-btn.sql-icon-run .sql-btn-icon svg{stroke:#107c10;fill:#107c10;}",
-      ".sql-icon-btn.sql-icon-clear .sql-btn-icon{background:linear-gradient(135deg,#fff4ce,#fde7a9);}",
+      ".sql-icon-btn.sql-icon-export .sql-btn-icon svg,.sql-icon-btn.sql-icon-import .sql-btn-icon svg{stroke:#0f56c8;}",
+      ".sql-icon-btn.sql-icon-run .sql-btn-icon svg{stroke:#107c10;}",
       ".sql-icon-btn.sql-icon-clear .sql-btn-icon svg{stroke:#ca5010;}",
-      ".sql-icon-btn.sql-icon-export .sql-btn-icon{background:linear-gradient(135deg,#e6f4ea,#c7ead2);}",
-      ".sql-icon-btn.sql-icon-export .sql-btn-icon svg{stroke:#217346;}",
-      ".sql-icon-btn.sql-icon-lint .sql-btn-icon{background:linear-gradient(135deg,#f3f2f1,#e1dfdd);}",
       ".sql-icon-btn.sql-icon-lint .sql-btn-icon svg{stroke:#5c2d91;}",
-      ".sql-icon-btn.sql-icon-copy .sql-btn-icon{background:linear-gradient(135deg,#eef6ff,#d7e8ff);}",
-      ".sql-icon-btn.sql-icon-copy .sql-btn-icon svg{stroke:#0078d4;}",
+      ".sql-icon-btn.sql-icon-selection .sql-btn-icon svg,.sql-icon-btn.sql-icon-block .sql-btn-icon svg,.sql-icon-btn.sql-icon-settings .sql-btn-icon svg,.sql-icon-btn.sql-icon-snippets .sql-btn-icon svg{stroke:#17365f;}",
       ".sql-toolbar .tm-sep{opacity:.55;padding:0 6px;}",
       ".sql-editor-stats,.sql-lint-warning{font-size:11px;margin-top:3px;}",
       ".sql-lint-warning{color:#a00000;}",
@@ -2388,18 +2383,20 @@
 
   function getOfficeIconSvg(iconName) {
     var icons = {
-      run:       "<svg viewBox='0 0 16 16' aria-hidden='true'><path d='M5 3.5v9l7-4.5z'></path></svg>",
-      selection: "<svg viewBox='0 0 16 16' aria-hidden='true'><rect x='3' y='3' width='10' height='10' rx='1.5'></rect><path d='M6 6h4M6 8h3M6 10h4'></path></svg>",
-      block:     "<svg viewBox='0 0 16 16' aria-hidden='true'><path d='M4 3.5h8M4 6h8M4 8.5h8M4 11h5'></path><rect x='2.5' y='2.5' width='11' height='11' rx='1.5'></rect></svg>",
-      clear:     "<svg viewBox='0 0 16 16' aria-hidden='true'><path d='M5.5 5.5l5 5M10.5 5.5l-5 5'></path><path d='M3 4h10M6 4V2.8h4V4M5 6v6h6V6'></path></svg>",
-      lint:      "<svg viewBox='0 0 16 16' aria-hidden='true'><path d='M8 2.5l5.5 9.5h-11z'></path><path d='M8 6v3M8 11.5h.01'></path></svg>",
-      import:    "<svg viewBox='0 0 16 16' aria-hidden='true'><path d='M4 2.5h5l3 3v8H4z'></path><path d='M9 2.5v3h3M8 11V7M6.5 8.5L8 7l1.5 1.5M6 11h4'></path></svg>",
-      export:    "<svg viewBox='0 0 16 16' aria-hidden='true'><path d='M4 2.5h5l3 3v8H4z'></path><path d='M9 2.5v3h3M6 10.5h4M8 7v4M6.5 9.5L8 11l1.5-1.5'></path></svg>",
-      snippets:  "<svg viewBox='0 0 16 16'><path d='M3 3h10v3H3zM3 8h10v5H3z'></path></svg>",
-      settings:  "<svg viewBox='0 0 16 16' aria-hidden='true'><path d='M8 5.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z'></path><path d='M8 2.5v1.3M8 12.2v1.3M3.2 5.2l1.1.7M11.7 10.1l1.1.7M3.2 10.8l1.1-.7M11.7 5.9l1.1-.7'></path></svg>",
-      copy:      "<svg viewBox='0 0 16 16' aria-hidden='true'><rect x='5' y='4' width='8' height='9' rx='1'></rect><path d='M3 11V3.5A1.5 1.5 0 0 1 4.5 2H10'></path></svg>"
+      run:       "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M8 5v14l11-7z'></path></svg>",
+      selection: "<svg viewBox='0 0 24 24' aria-hidden='true'><rect x='5' y='4' width='14' height='16' rx='2'></rect><path d='M8 8h8M8 12h6M8 16h8'></path></svg>",
+      block:     "<svg viewBox='0 0 24 24' aria-hidden='true'><rect x='4' y='4' width='16' height='16' rx='2'></rect><path d='M8 8h8M8 12h8M8 16h5'></path></svg>",
+      clear:     "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M3 6h18'></path><path d='M8 6V4h8v2'></path><path d='M7 10v10h10V10'></path><path d='m10 13 4 4M14 13l-4 4'></path></svg>",
+      lint:      "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M12 3 22 20H2z'></path><path d='M12 9v5'></path><path d='M12 17h.01'></path></svg>",
+      import:    "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'></path><path d='M14 2v6h6'></path><path d='M12 18V10'></path><path d='m8 14 4-4 4 4'></path></svg>",
+      export:    "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'></path><path d='M14 2v6h6'></path><path d='M12 10v8'></path><path d='m8 14 4 4 4-4'></path></svg>",
+      snippets:  "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='m10 8-4 4 4 4'></path><path d='m14 8 4 4-4 4'></path><path d='m13 4-2 16'></path></svg>",
+      settings:  "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z'></path><path d='M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-.6 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 .6-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 .6 1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.24.36.45.62.6 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1z'></path></svg>",
+      copy:      "<svg viewBox='0 0 24 24' aria-hidden='true'><rect x='8' y='7' width='11' height='13' rx='2'></rect><path d='M5 16V6a2 2 0 0 1 2-2h8'></path></svg>",
+      download:  "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M12 3v12'></path><path d='m7 10 5 5 5-5'></path><path d='M5 21h14'></path></svg>",
+      layout:    "<svg viewBox='0 0 24 24' aria-hidden='true'><rect x='4' y='4' width='16' height='16' rx='2'></rect><path d='M4 10h16M10 4v16'></path></svg>"
     };
-    return icons[iconName] || "";
+    return icons[iconName] || icons.copy;
   }
 
   function setButtonLabel(button, label) {

@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Editor de Query.user.js`
 
 Arquivo publicado: `tampermonkey/editor-de-query.user.js`
 
-Versao do script: `2026.06.25.03`
+Versao do script: `2026.06.25.05`
 
-Versao do documento: `2026.06.25.03`
+Versao do documento: `2026.06.25.05`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/editor-de-query.user.js`
@@ -95,6 +95,8 @@ Grupos existentes:
 - Config.
 
 A ribbon oferece botoes e seletores para as principais acoes do editor, com icones tematicos e opcao para ocultar icones ou comandos individuais.
+
+Os icones da ribbon usam o mesmo padrao SVG de linha adotado no script Resultado Personalizado, mantendo tamanho e estilo visual consistentes (novo).
 
 ### 7.4 Execucao SQL
 
