@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Resultado Personalizado
 // @namespace    http://tampermonkey.net/
-// @version      2026-07-08.01
+// @version      2026-07-08.02
 // @description  Jornada "Resultado Personalizado": Grid em acordeon, filtros, insights sob demanda, exportacao visivel/completa e performance para resultados grandes.
 // @compatible   edge
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -514,7 +514,7 @@
       if (!key) continue;
       btns[i].style.display = isToolbarButtonHidden(key) ? "none" : "";
     }
-    var groups = actionBarEl.querySelectorAll(".tm-group");
+    var groups = actionBarEl.querySelectorAll(".tm-group,.tm-menu");
     for (var g = 0; g < groups.length; g++) {
       var visible = Array.prototype.some.call(groups[g].querySelectorAll("button[data-tm-btn]"), function (btn) {
         return btn.style.display !== "none";
@@ -560,11 +560,18 @@
       + ".tm-acc-actions button.tm-toolbar-off{color:#6b3d00;border-color:#d99a31;background:linear-gradient(#fff7e6,#fff);}\n"
       + ".tm-acc-body{padding:8px 8px 10px 8px;overflow:visible;}\n"
       + ".tm-acc-body.tm-collapsed{display:none;}\n"
-      + ".tm-actionbar{display:flex;gap:6px;align-items:flex-start;flex-wrap:wrap;overflow-x:auto;overflow-y:hidden;white-space:nowrap;margin:0 0 8px 0;padding:5px 7px;background:linear-gradient(#f8fbff,#eaf1f9);border-top:1px solid #d7e0eb;border-bottom:1px solid #cfdbe8;box-shadow:inset 0 1px 0 rgba(255,255,255,.8);}\n"
-      + ".tm-actionbar .tm-group{display:flex;align-items:center;gap:5px;flex-wrap:wrap;min-height:0;padding:16px 6px 5px 6px;position:relative;border:1px solid #d6e0eb;border-radius:6px;background:linear-gradient(#ffffff,#f8fbff);box-shadow:inset 0 1px 0 rgba(255,255,255,.9);}\n"
-      + ".tm-actionbar .tm-group::before{content:attr(data-title);position:absolute;left:7px;top:2px;font-size:10px !important;line-height:12px;font-weight:700;letter-spacing:.45px;color:#40506a;text-transform:uppercase;}\n"
-      + ".tm-actionbar .tm-group-title{display:none;}\n"
-      + ".tm-actionbar .tm-group-btns{display:flex;gap:5px;align-items:center;flex-wrap:wrap;white-space:nowrap;}\n"
+      + ".tm-actionbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;overflow:visible;white-space:nowrap;margin:0 0 8px 0;padding:6px 7px;background:linear-gradient(#f8fbff,#eaf1f9);border-top:1px solid #d7e0eb;border-bottom:1px solid #cfdbe8;box-shadow:inset 0 1px 0 rgba(255,255,255,.8);}\n"
+      + ".tm-actionbar .tm-menu,.tm-actionbar .tm-quick-actions{position:relative;display:inline-flex;align-items:center;gap:5px;flex:0 0 auto;}\n"
+      + ".tm-actionbar .tm-menu-trigger{font-weight:700;min-width:0;}\n"
+      + ".tm-actionbar .tm-menu-trigger::after{content:'▾';font-size:10px;margin-left:4px;color:#607089;}\n"
+      + ".tm-actionbar .tm-menu.tm-open .tm-menu-trigger,.tm-actionbar .tm-menu:focus-within .tm-menu-trigger{background:linear-gradient(#ffffff,#eaf3ff);border-color:#8fb0d8;}\n"
+      + ".tm-actionbar .tm-menu-panel{display:none;position:absolute;left:0;top:calc(100% + 5px);z-index:100001;min-width:210px;max-width:min(320px,92vw);padding:6px;border:1px solid #b7c5d8;border-radius:8px;background:#fff;box-shadow:0 12px 28px rgba(32,56,95,.22);}\n"
+      + ".tm-actionbar .tm-menu.tm-open .tm-menu-panel,.tm-actionbar .tm-menu:focus-within .tm-menu-panel{display:grid;gap:4px;}\n"
+      + ".tm-actionbar .tm-menu-panel button{width:100%;justify-content:flex-start;height:26px !important;}\n"
+      + ".tm-actionbar .tm-menu-panel .tm-grid-resize-block{display:grid;gap:4px;padding:0;}\n"
+      + ".tm-actionbar .tm-menu-panel .tm-grid-resize-title{display:none;}\n"
+      + ".tm-actionbar .tm-group{display:none;}\n"
+      + ".tm-actionbar .tm-group-title,.tm-actionbar .tm-group-btns{display:none;}\n"
       + ".tm-actionbar button,.tm-actionbar select{height:23px !important;min-height:0 !important;padding:2px 7px !important;font-size:12px !important;line-height:16px !important;cursor:pointer;border-radius:6px;border:1px solid #b7c5d8;background:linear-gradient(#fff,#f7fbff);color:#20385f;box-shadow:inset 0 1px 0 rgba(255,255,255,.85);}\n"
       + ".tm-actionbar button:hover{background:linear-gradient(#ffffff,#eaf3ff);border-color:#8fb0d8;}\n"
       + ".tm-actionbar button:active{background:linear-gradient(#eaf3ff,#ffffff);}\n"
@@ -3426,26 +3433,91 @@
     resizeBlock.appendChild(btnFitW);
     resizeBlock.appendChild(btnFitH);
 
-    function mkGroup(title, items) {
-      var g = document.createElement("div");
-      g.className = "tm-group";
-      g.setAttribute("data-title", title);
-      var t = document.createElement("div");
-      t.className = "tm-group-title";
-      t.textContent = title;
-      var row = document.createElement("div");
-      row.className = "tm-group-btns";
-      for (var i = 0; i < items.length; i++) row.appendChild(items[i]);
-      g.appendChild(t);
-      g.appendChild(row);
-      return g;
+    var btnConfigPanel = tagBtn(mkBtn("Config", function () {
+      openConfigPanelModern();
+    }, "settings"), "cfg_panel", "Configurações");
+
+    var btnToolbarToggle = tagBtn(mkBtn("Toolbar", function () {
+      toggleResultToolbar();
+    }, "layout"), "toolbar_toggle", "Toolbar ON/OFF");
+
+    function closeToolbarMenus(except) {
+      if (!actionBarEl) return;
+      var menus = actionBarEl.querySelectorAll(".tm-menu.tm-open");
+      for (var m = 0; m < menus.length; m++) {
+        if (menus[m] !== except) {
+          menus[m].classList.remove("tm-open");
+          var trigger = menus[m].querySelector(".tm-menu-trigger");
+          if (trigger) trigger.setAttribute("aria-expanded", "false");
+        }
+      }
     }
 
-    actionBarEl.appendChild(mkGroup("Copiar", [btnCopyGrid, btnCopyTable, btnCopyCell, btnCopyCol, btnCopyRow]));
-    actionBarEl.appendChild(mkGroup("Exportar visivel", [btnCsv, btnHtml, btnTxt, btnXlsx, btnSaveJPG, btnCopyImg]));
-    actionBarEl.appendChild(mkGroup("Exportar completo", [btnCsvAll, btnHtmlAll, btnTxtAll, btnXlsxAll]));
-    actionBarEl.appendChild(mkGroup("Colunas", [btnCols, btnColsAll, btnClearFilters, btnRenameCol, btnSplitDate]));
-    actionBarEl.appendChild(mkGroup("Layout", [resizeBlock, btnReset]));
+    function mkMenu(title, items) {
+      var menu = document.createElement("div");
+      menu.className = "tm-menu";
+      menu.setAttribute("data-title", title);
+
+      var trigger = document.createElement("button");
+      trigger.type = "button";
+      trigger.className = "tm-menu-trigger";
+      trigger.textContent = title;
+      trigger.title = title;
+      trigger.setAttribute("aria-haspopup", "menu");
+      trigger.setAttribute("aria-expanded", "false");
+
+      var panel = document.createElement("div");
+      panel.className = "tm-menu-panel";
+      panel.setAttribute("role", "menu");
+      for (var i = 0; i < items.length; i++) panel.appendChild(items[i]);
+
+      trigger.addEventListener("click", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        var isOpen = menu.classList.contains("tm-open");
+        closeToolbarMenus(menu);
+        menu.classList.toggle("tm-open", !isOpen);
+        trigger.setAttribute("aria-expanded", !isOpen ? "true" : "false");
+      }, true);
+
+      panel.addEventListener("click", function () {
+        window.setTimeout(function () {
+          menu.classList.remove("tm-open");
+          trigger.setAttribute("aria-expanded", "false");
+        }, 0);
+      }, true);
+
+      menu.appendChild(trigger);
+      menu.appendChild(panel);
+      return menu;
+    }
+
+    function mkQuickActions(items) {
+      var wrap = document.createElement("div");
+      wrap.className = "tm-quick-actions";
+      for (var i = 0; i < items.length; i++) wrap.appendChild(items[i]);
+      return wrap;
+    }
+
+    actionBarEl.addEventListener("click", function (e) {
+      e.stopPropagation();
+    }, true);
+    if (!window.__tmCompactToolbarMenuHook) {
+      window.__tmCompactToolbarMenuHook = true;
+      document.addEventListener("click", function () {
+        closeToolbarMenus(null);
+      }, true);
+      document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape") closeToolbarMenus(null);
+      }, true);
+    }
+
+    actionBarEl.appendChild(mkMenu("Copiar", [btnCopyGrid, btnCopyTable, btnCopyCell, btnCopyCol, btnCopyRow]));
+    actionBarEl.appendChild(mkMenu("Exportar visivel", [btnCsv, btnHtml, btnTxt, btnXlsx, btnSaveJPG, btnCopyImg]));
+    actionBarEl.appendChild(mkMenu("Exportar completo", [btnCsvAll, btnHtmlAll, btnTxtAll, btnXlsxAll]));
+    actionBarEl.appendChild(mkMenu("Colunas", [btnCols, btnColsAll, btnRenameCol, btnSplitDate]));
+    actionBarEl.appendChild(mkMenu("Layout", [resizeBlock, btnReset]));
+    actionBarEl.appendChild(mkQuickActions([btnClearFilters, btnConfigPanel, btnToolbarToggle]));
 
     applyToolbarButtonVisibility();
 

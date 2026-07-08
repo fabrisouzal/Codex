@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Resultado Personalizado.user.js`
 
 Arquivo publicado: `tampermonkey/resultado-personalizado.user.js`
 
-Versao do script: `2026-07-08.01`
+Versao do script: `2026-07-08.02`
 
-Versao do documento: `2026-07-08.01`
+Versao do documento: `2026-07-08.02`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/resultado-personalizado.user.js`
@@ -58,6 +58,9 @@ Comportamentos existentes:
 - Alternancia de toolbar ligada/desligada.
 - Remocao de comandos redundantes do toolbar.
 - Acoes de copia, exportacao, configuracao, filtros, colunas e insights.
+- Toolbar compacta com menus agrupados para reduzir ocupacao horizontal.
+- Menus `Copiar`, `Exportar visivel`, `Exportar completo`, `Colunas` e `Layout`.
+- Acoes rapidas fora dos menus para `Limpar filtros`, `Config` e `Toolbar`.
 - Opcao de mostrar ou ocultar icones, reduzindo ruido visual quando necessario.
 
 ### 5.3 Grid Aprimorado
@@ -183,7 +186,7 @@ Comportamentos existentes:
 - Ajustes visuais preservando o tema atual.
 - Preferencia persistente para o separador utilizado na exportacao CSV.
 - Preferencias de performance para resultado grande: linhas renderizadas inicialmente, lote de `Mostrar mais` e limite para pausar insights automaticos.
-- Comandos agrupados para reduzir confusao e excesso de botoes.
+- Comandos agrupados em menus compactos para reduzir confusao e excesso de botoes.
 - `Salvar JPG` e `Reset completo` ocultos por padrao na toolbar, com possibilidade de reativacao no painel.
 
 ## 6. Persistencia e Estado
