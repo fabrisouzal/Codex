@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Resultado Personalizado
 // @namespace    http://tampermonkey.net/
-// @version      2026-07-08.03
+// @version      2026-07-08.04
 // @description  Jornada "Resultado Personalizado": Grid em acordeon, filtros, insights sob demanda, exportacao visivel/completa e performance para resultados grandes.
 // @compatible   edge
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -3502,15 +3502,15 @@
 
     actionBarEl.addEventListener("click", function (e) {
       e.stopPropagation();
-    }, true);
+    });
     if (!window.__tmCompactToolbarMenuHook) {
       window.__tmCompactToolbarMenuHook = true;
       document.addEventListener("click", function () {
         closeToolbarMenus(null);
-      }, true);
+      });
       document.addEventListener("keydown", function (e) {
         if (e.key === "Escape") closeToolbarMenus(null);
-      }, true);
+      });
     }
 
     actionBarEl.appendChild(mkCopyActions([btnCopyGrid, btnCopyTable, btnCopyCell, btnCopyCol, btnCopyRow]));

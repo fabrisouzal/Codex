@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Resultado Personalizado.user.js`
 
 Arquivo publicado: `tampermonkey/resultado-personalizado.user.js`
 
-Versao do script: `2026-07-08.03`
+Versao do script: `2026-07-08.04`
 
-Versao do documento: `2026-07-08.03`
+Versao do documento: `2026-07-08.04`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/resultado-personalizado.user.js`
@@ -62,6 +62,7 @@ Comportamentos existentes:
 - Menus `Exportar visivel`, `Exportar completo`, `Colunas` e `Layout`.
 - Acoes rapidas fora dos menus para `Limpar filtros`.
 - Os comandos `Configuracoes` e `Toolbar ON/OFF` permanecem apenas na barra superior do acordeon, fora da toolbar do resultado e fora da lista de botoes configuraveis.
+- Cliques nos botoes da toolbar sao preservados antes do fechamento automatico de menus.
 - Opcao de mostrar ou ocultar icones, reduzindo ruido visual quando necessario.
 
 ### 5.3 Grid Aprimorado
