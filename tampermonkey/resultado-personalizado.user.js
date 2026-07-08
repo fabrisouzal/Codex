@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Resultado Personalizado
 // @namespace    http://tampermonkey.net/
-// @version      2026-07-08.04
+// @version      2026-07-08.05
 // @description  Jornada "Resultado Personalizado": Grid em acordeon, filtros, insights sob demanda, exportacao visivel/completa e performance para resultados grandes.
 // @compatible   edge
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -581,18 +581,12 @@
       + ".tm-actionbar .tm-sep{display:none;}\n"
       + ".tm-actionbar .tm-grid-resize-block{display:inline-flex;align-items:center;gap:5px;padding:0;border:0;background:transparent;}\n"
       + ".tm-actionbar .tm-grid-resize-block .tm-grid-resize-title{opacity:.8;font-weight:600;}\n"
-      + ".sql-icon-btn{display:inline-flex;align-items:center;gap:4px;color:#20385f;white-space:nowrap;}\n"
-      + ".sql-icon-btn .sql-btn-icon{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;flex:0 0 15px;border-radius:4px;background:linear-gradient(135deg,#f7fbff,#dcecff);}\n"
-      + ".sql-icon-btn .sql-btn-icon svg{width:13px;height:13px;display:block;stroke:#185abd;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}\n"
+      + ".sql-icon-btn{display:inline-flex;align-items:center;gap:7px;color:#20385f;white-space:nowrap;}\n"
+      + ".sql-icon-btn .sql-btn-icon{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;flex:0 0 18px;background:transparent;}\n"
+      + ".sql-icon-btn .sql-btn-icon svg{width:18px;height:18px;display:block;stroke:#17365f;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;}\n"
       + ".tm-actionbar.tm-hide-icons .sql-btn-icon{display:none !important;}\n"
-      + ".sql-icon-btn.sql-icon-copy .sql-btn-icon{background:linear-gradient(135deg,#eef6ff,#d7e8ff);}\n"
-      + ".sql-icon-btn.sql-icon-copy .sql-btn-icon svg{stroke:#0078d4;}\n"
-      + ".sql-icon-btn.sql-icon-export .sql-btn-icon{background:linear-gradient(135deg,#e6f4ea,#c7ead2);}\n"
-      + ".sql-icon-btn.sql-icon-export .sql-btn-icon svg{stroke:#217346;}\n"
-      + ".sql-icon-btn.sql-icon-layout .sql-btn-icon{background:linear-gradient(135deg,#fff4ce,#fde7a9);}\n"
-      + ".sql-icon-btn.sql-icon-layout .sql-btn-icon svg{stroke:#ca5010;}\n"
-      + ".sql-icon-btn.sql-icon-settings .sql-btn-icon{background:linear-gradient(135deg,#f3f2f1,#e1dfdd);}\n"
-      + ".sql-icon-btn.sql-icon-settings .sql-btn-icon svg{stroke:#5c2d91;}\n"
+      + ".sql-icon-btn.sql-icon-export .sql-btn-icon svg,.sql-icon-btn.sql-icon-download .sql-btn-icon svg{stroke:#0f56c8;}\n"
+      + ".sql-icon-btn.sql-icon-filter .sql-btn-icon svg,.sql-icon-btn.sql-icon-settings .sql-btn-icon svg{stroke:#17365f;}\n"
       + ".tm-summary-panel{margin-top:10px;border:1px solid #d6e0eb;border-radius:8px;background:#fff;box-shadow:inset 0 1px 0 rgba(255,255,255,.9);overflow:hidden;}\n"
       + ".tm-insight-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;background:linear-gradient(#f7fbff,#eaf1f9);border-bottom:1px solid #d6e0eb;}\n"
       + ".tm-insight-title{font-size:13px;font-weight:800;color:#20385f;line-height:1.2;}\n"
@@ -2845,14 +2839,19 @@
 
   function getGridIconSvg(iconName) {
     var icons = {
-      copy: "<svg viewBox='0 0 16 16' aria-hidden='true'><rect x='5' y='4' width='8' height='9' rx='1'></rect><path d='M3 11V3.5A1.5 1.5 0 0 1 4.5 2H10'></path></svg>",
-      export: "<svg viewBox='0 0 16 16' aria-hidden='true'><path d='M4 2.5h5l3 3v8H4z'></path><path d='M9 2.5v3h3M6 10.5h4M8 7v4M6.5 9.5L8 11l1.5-1.5'></path></svg>",
-      columns: "<svg viewBox='0 0 16 16' aria-hidden='true'><rect x='2.5' y='3' width='11' height='10' rx='1.5'></rect><path d='M6 3v10M10 3v10M2.5 6.5h11'></path></svg>",
-      filter: "<svg viewBox='0 0 16 16' aria-hidden='true'><path d='M3 3.5h10l-4 4.6v3.4l-2 1V8.1z'></path><path d='M10.8 10.8l2.4 2.4M13.2 10.8l-2.4 2.4'></path></svg>",
-      layout: "<svg viewBox='0 0 16 16' aria-hidden='true'><rect x='3' y='3' width='10' height='10' rx='1.5'></rect><path d='M6 3v10M3 7h10M8.5 10.5l2 2M10.5 10.5v2h-2'></path></svg>",
-      settings: "<svg viewBox='0 0 16 16' aria-hidden='true'><path d='M8 5.5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z'></path><path d='M8 2.5v1.3M8 12.2v1.3M3.2 5.2l1.1.7M11.7 10.1l1.1.7M3.2 10.8l1.1-.7M11.7 5.9l1.1-.7'></path></svg>",
-      reset: "<svg viewBox='0 0 16 16' aria-hidden='true'><path d='M4.2 5.2A4.8 4.8 0 1 1 3.4 9'></path><path d='M4 2.8v2.6h2.6'></path></svg>",
-      image: "<svg viewBox='0 0 16 16' aria-hidden='true'><rect x='2.5' y='3' width='11' height='10' rx='1.5'></rect><path d='M4.5 10l2.2-2.2 1.8 1.8 1.2-1.2 1.8 1.8'></path><circle cx='10.5' cy='5.8' r='.8'></circle></svg>"
+      copy: "<svg viewBox='0 0 24 24' aria-hidden='true'><rect x='8' y='7' width='11' height='13' rx='2'></rect><path d='M5 16V6a2 2 0 0 1 2-2h8'></path></svg>",
+      clipboard: "<svg viewBox='0 0 24 24' aria-hidden='true'><rect x='8' y='3' width='8' height='4' rx='1'></rect><path d='M8 5H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2'></path></svg>",
+      download: "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M12 3v12'></path><path d='m7 10 5 5 5-5'></path><path d='M5 21h14'></path></svg>",
+      export: "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M12 3v12'></path><path d='m7 10 5 5 5-5'></path><path d='M5 21h14'></path></svg>",
+      file: "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'></path><path d='M14 2v6h6'></path><path d='M8 13h8M8 17h6'></path></svg>",
+      code: "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='m10 8-4 4 4 4'></path><path d='m14 8 4 4-4 4'></path><path d='m13 4-2 16'></path></svg>",
+      sheet: "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'></path><path d='M14 2v6h6'></path><path d='m9 13 6 6M15 13l-6 6'></path></svg>",
+      columns: "<svg viewBox='0 0 24 24' aria-hidden='true'><rect x='4' y='4' width='16' height='16' rx='2'></rect><path d='M9 4v16M15 4v16'></path></svg>",
+      filter: "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='m3 21 8-8'></path><path d='M12 5l7 7'></path><path d='m15 8-7 7'></path><path d='M17 3l4 4'></path><path d='m14 6 4-4 4 4-4 4'></path></svg>",
+      layout: "<svg viewBox='0 0 24 24' aria-hidden='true'><rect x='4' y='4' width='16' height='16' rx='2'></rect><path d='M4 10h16M10 4v16'></path></svg>",
+      settings: "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7z'></path><path d='M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-.6 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 .6-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 .6 1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.24.36.45.62.6 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1z'></path></svg>",
+      reset: "<svg viewBox='0 0 24 24' aria-hidden='true'><path d='M3 12a9 9 0 1 0 3-6.7'></path><path d='M3 4v6h6'></path></svg>",
+      image: "<svg viewBox='0 0 24 24' aria-hidden='true'><rect x='3' y='5' width='18' height='16' rx='2'></rect><circle cx='8.5' cy='10.5' r='1.5'></circle><path d='m21 16-5-5L5 21'></path></svg>"
     };
     return icons[iconName] || icons.copy;
   }
@@ -3320,7 +3319,7 @@
         if (!res.ok) return alert("Falha ao copiar (bloqueio do navegador).");
         showToast("Copiado como grid (" + res.copied + " linhas)");
       });
-    }, "copy"), "copy_grid", "Copiar como grid");
+    }, "clipboard"), "copy_grid", "Copiar como grid");
 
     var btnCopyTable = tagBtn(mkBtn("Copiar para tabela", function () {
       copyToTableExcel(function (ok) {
@@ -3355,14 +3354,14 @@
       });
     }, "copy"), "copy_row", "Copiar linha");
 
-    var btnCsv = tagBtn(mkBtn("CSV visivel", function () { exportCSVRespectingFilter(); }, "export"), "exp_csv", "Exportar CSV visivel");
-    var btnHtml = tagBtn(mkBtn("HTML visivel", function () { exportHTMLRespectingFilter(); }, "export"), "exp_html", "Exportar HTML visivel");
-    var btnTxt = tagBtn(mkBtn("TXT visivel", function () { exportTXTRespectingFilter(); }, "export"), "exp_txt", "Exportar TXT visivel");
-    var btnXlsx = tagBtn(mkBtn("XLSX visivel", function () { exportXLSXRespectingFilter(); }, "export"), "exp_xlsx", "Exportar XLSX visivel");
-    var btnCsvAll = tagBtn(mkBtn("CSV completo", function () { exportCSVAll(); }, "export"), "exp_csv_all", "Exportar CSV completo");
-    var btnHtmlAll = tagBtn(mkBtn("HTML completo", function () { exportHTMLAll(); }, "export"), "exp_html_all", "Exportar HTML completo");
-    var btnTxtAll = tagBtn(mkBtn("TXT completo", function () { exportTXTAll(); }, "export"), "exp_txt_all", "Exportar TXT completo");
-    var btnXlsxAll = tagBtn(mkBtn("XLSX completo", function () { exportXLSXAll(); }, "export"), "exp_xlsx_all", "Exportar XLSX completo");
+    var btnCsv = tagBtn(mkBtn("CSV visivel", function () { exportCSVRespectingFilter(); }, "file"), "exp_csv", "Exportar CSV visivel");
+    var btnHtml = tagBtn(mkBtn("HTML visivel", function () { exportHTMLRespectingFilter(); }, "code"), "exp_html", "Exportar HTML visivel");
+    var btnTxt = tagBtn(mkBtn("TXT visivel", function () { exportTXTRespectingFilter(); }, "file"), "exp_txt", "Exportar TXT visivel");
+    var btnXlsx = tagBtn(mkBtn("XLSX visivel", function () { exportXLSXRespectingFilter(); }, "sheet"), "exp_xlsx", "Exportar XLSX visivel");
+    var btnCsvAll = tagBtn(mkBtn("CSV completo", function () { exportCSVAll(); }, "file"), "exp_csv_all", "Exportar CSV completo");
+    var btnHtmlAll = tagBtn(mkBtn("HTML completo", function () { exportHTMLAll(); }, "code"), "exp_html_all", "Exportar HTML completo");
+    var btnTxtAll = tagBtn(mkBtn("TXT completo", function () { exportTXTAll(); }, "file"), "exp_txt_all", "Exportar TXT completo");
+    var btnXlsxAll = tagBtn(mkBtn("XLSX completo", function () { exportXLSXAll(); }, "sheet"), "exp_xlsx_all", "Exportar XLSX completo");
     var btnCols = tagBtn(mkBtn("Colunas", function () {
       var table = getMainTableForResize();
       if (!table) return alert("Tabela não encontrada.");
@@ -3446,18 +3445,25 @@
       }
     }
 
-    function mkMenu(title, items) {
+    function mkMenu(title, items, iconName) {
       var menu = document.createElement("div");
       menu.className = "tm-menu";
       menu.setAttribute("data-title", title);
 
       var trigger = document.createElement("button");
       trigger.type = "button";
-      trigger.className = "tm-menu-trigger";
-      trigger.textContent = title;
+      trigger.className = "tm-menu-trigger sql-icon-btn";
       trigger.title = title;
       trigger.setAttribute("aria-haspopup", "menu");
       trigger.setAttribute("aria-expanded", "false");
+      var triggerIcon = document.createElement("span");
+      triggerIcon.className = "sql-btn-icon";
+      triggerIcon.innerHTML = getGridIconSvg(iconName || "copy");
+      var triggerLabel = document.createElement("span");
+      triggerLabel.className = "sql-btn-label";
+      triggerLabel.textContent = title;
+      trigger.appendChild(triggerIcon);
+      trigger.appendChild(triggerLabel);
 
       var panel = document.createElement("div");
       panel.className = "tm-menu-panel";
@@ -3514,10 +3520,10 @@
     }
 
     actionBarEl.appendChild(mkCopyActions([btnCopyGrid, btnCopyTable, btnCopyCell, btnCopyCol, btnCopyRow]));
-    actionBarEl.appendChild(mkMenu("Exportar visivel", [btnCsv, btnHtml, btnTxt, btnXlsx, btnSaveJPG, btnCopyImg]));
-    actionBarEl.appendChild(mkMenu("Exportar completo", [btnCsvAll, btnHtmlAll, btnTxtAll, btnXlsxAll]));
-    actionBarEl.appendChild(mkMenu("Colunas", [btnCols, btnColsAll, btnRenameCol, btnSplitDate]));
-    actionBarEl.appendChild(mkMenu("Layout", [resizeBlock, btnReset]));
+    actionBarEl.appendChild(mkMenu("Exportar visivel", [btnCsv, btnHtml, btnTxt, btnXlsx, btnSaveJPG, btnCopyImg], "download"));
+    actionBarEl.appendChild(mkMenu("Exportar completo", [btnCsvAll, btnHtmlAll, btnTxtAll, btnXlsxAll], "download"));
+    actionBarEl.appendChild(mkMenu("Colunas", [btnCols, btnColsAll, btnRenameCol, btnSplitDate], "columns"));
+    actionBarEl.appendChild(mkMenu("Layout", [resizeBlock, btnReset], "layout"));
     actionBarEl.appendChild(mkQuickActions([btnClearFilters]));
 
     applyToolbarButtonVisibility();
