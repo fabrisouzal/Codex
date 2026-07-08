@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Editor de Query.user.js`
 
 Arquivo publicado: `tampermonkey/editor-de-query.user.js`
 
-Versao do script: `2026.06.25.05`
+Versao do script: `2026.07.08.01`
 
-Versao do documento: `2026.06.25.05`
+Versao do documento: `2026.07.08.01`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/editor-de-query.user.js`
