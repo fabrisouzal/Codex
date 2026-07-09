@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Editor de Query
 // @namespace    http://tampermonkey.net/
-// @version      2026070802
+// @version      2026-07-09.01
 // @description  Editor SQL Pro com CodeMirror, ribbon, snippets, configuracoes, import/export SQL e execucao parcial.
 // @compatible   edge
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -1757,8 +1757,13 @@
       ".tm-setting-row.tm-toggle{grid-template-columns:1fr 22px;}",
       ".tm-toggle-grid{display:grid;grid-template-columns:repeat(3,minmax(160px,1fr));gap:2px 14px;}",
       ".tm-toggle-grid .tm-setting-row{margin:4px 0;}",
+      ".tm-bar-groups{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:10px;}",
+      ".tm-settings-subgroup{border:1px solid #e0e7f0;border-radius:7px;background:#fbfdff;padding:9px;}",
+      ".tm-settings-subgroup h4{margin:0 0 6px 0;font-size:11px;line-height:14px;color:#40506a;text-transform:uppercase;letter-spacing:.35px;}",
+      ".tm-settings-subgroup .tm-toggle-grid{grid-template-columns:repeat(2,minmax(140px,1fr));gap:1px 12px;}",
+      ".tm-settings-subgroup .tm-setting-row{margin:3px 0;}",
       ".tm-settings-ft{display:flex;justify-content:space-between;gap:8px;padding:10px 12px;border-top:1px solid #d6e0eb;background:#f8fbff;}",
-      "@media(max-width:820px){.tm-settings-bd{grid-template-columns:1fr;}.tm-settings-card.tm-wide{grid-column:auto;}.tm-toggle-grid{grid-template-columns:1fr;}}",
+      "@media(max-width:820px){.tm-settings-bd{grid-template-columns:1fr;}.tm-settings-card.tm-wide{grid-column:auto;}.tm-toggle-grid,.tm-bar-groups,.tm-settings-subgroup .tm-toggle-grid{grid-template-columns:1fr;}}",
       /* Caixa de execução */
       ".sql-exec-box{position:fixed;background:rgba(30,30,30,.95);color:#fff;padding:8px 12px;border-radius:10px;font-size:12px;z-index:999999;box-shadow:0 2px 8px rgba(0,0,0,.35);max-width:360px;min-width:230px;}",
       ".sql-exec-box.sql-pos-bottom-left{bottom:16px;left:20px;}",
@@ -2175,16 +2180,34 @@
     }, true);
 
     var visibleMap = getRibbonItemsVisibleMap();
-    var ribbonRows = [createSettingRow("Mostrar ícones", iconsCheck)];
+    var ribbonItemsByKey = {};
     RIBBON_ITEMS.forEach(function (item) {
+      ribbonItemsByKey[item.key] = item;
+    });
+    function createRibbonItemRow(key) {
+      var item = ribbonItemsByKey[key];
+      if (!item) return null;
       var chk = document.createElement("input");
       chk.type = "checkbox";
       chk.checked = visibleMap[item.key];
       chk.addEventListener("change", function () {
         setRibbonItemVisible(item.key, chk.checked);
       }, true);
-      ribbonRows.push(createSettingRow(item.label, chk));
-    });
+      return createSettingRow(item.label, chk);
+    }
+    function createRibbonRows(keys) {
+      return keys.map(createRibbonItemRow).filter(function (row) { return !!row; });
+    }
+    var ribbonGroups = [
+      createSettingsSubgroup("Aparencia", [
+        createSettingRow("Mostrar icones", iconsCheck)
+      ]),
+      createSettingsSubgroup("Execucao", createRibbonRows(["exec", "execSel", "selectBlock"])),
+      createSettingsSubgroup("Timer e comportamento", createRibbonRows(["timerWarn", "timerRestore", "autoCollapse"])),
+      createSettingsSubgroup("Editor e arquivos", createRibbonRows(["clear", "importSql", "exportSql", "snippets"])),
+      createSettingsSubgroup("Revisao e visual", createRibbonRows(["lint", "theme"])),
+      createSettingsSubgroup("Configuracao", createRibbonRows(["settings"]))
+    ];
 
     var themeSelect = createSelect(THEMES.map(function (t) {
       return { value: t.id, label: t.label };
@@ -2219,7 +2242,7 @@
 
     body.appendChild(createSettingsCard(
       "Barra",
-      [createSettingsGroup(ribbonRows, "tm-toggle-grid")],
+      [createSettingsGroup(ribbonGroups, "tm-bar-groups")],
       "Escolha quais comandos aparecem na ribbon. O botão Config do cabeçalho permanece disponível.",
       "tm-wide"
     ));
@@ -2483,6 +2506,16 @@
     var group = document.createElement("div");
     if (className) group.className = className;
     rows.forEach(function (row) { group.appendChild(row); });
+    return group;
+  }
+
+  function createSettingsSubgroup(title, rows) {
+    var group = document.createElement("section");
+    group.className = "tm-settings-subgroup";
+    var h = document.createElement("h4");
+    h.textContent = title;
+    group.appendChild(h);
+    group.appendChild(createSettingsGroup(rows, "tm-toggle-grid"));
     return group;
   }
 
