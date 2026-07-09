@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Editor de Query
 // @namespace    http://tampermonkey.net/
-// @version      2026-07-09.01
+// @version      2026-07-09.02
 // @description  Editor SQL Pro com CodeMirror, ribbon, snippets, configuracoes, import/export SQL e execucao parcial.
 // @compatible   edge
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -1675,12 +1675,12 @@
       ".sql-toolbar.hidden{display:none !important;}",
       ".sql-ribbon-group{display:flex;align-items:center;gap:5px;flex-wrap:wrap;min-height:0;padding:16px 6px 5px 6px;position:relative;border:1px solid #d6e0eb;border-radius:6px;background:linear-gradient(#ffffff,#f8fbff);box-shadow:inset 0 1px 0 rgba(255,255,255,.9);}",
       ".sql-ribbon-group::before{content:attr(data-title);position:absolute;left:7px;top:2px;font-size:10px !important;line-height:12px;font-weight:700;letter-spacing:.45px;color:#40506a;text-transform:uppercase;}",
-      ".sql-toolbar input[type='button'],.sql-toolbar button,.sql-toolbar select{height:23px !important;min-height:0 !important;padding:2px 7px !important;font-size:12px !important;line-height:16px !important;cursor:pointer;border-radius:6px;border:1px solid #b7c5d8;background:linear-gradient(#fff,#f7fbff);color:#20385f;}",
+      ".sql-toolbar input[type='button'],.sql-toolbar button,.sql-toolbar select{height:28px !important;min-height:0 !important;padding:3px 9px !important;font-size:12px !important;line-height:18px !important;cursor:pointer;border-radius:6px;border:1px solid #b7c5d8;background:linear-gradient(#fff,#f7fbff);color:#20385f;}",
       ".sql-toolbar input[type='button']:hover,.sql-toolbar button:hover{background:linear-gradient(#ffffff,#eaf3ff);border-color:#8fb0d8;}",
       ".sql-toolbar select{min-width:128px;}",
-      ".sql-icon-btn{display:inline-flex;align-items:center;gap:7px;color:#20385f;box-shadow:inset 0 1px 0 rgba(255,255,255,.85);white-space:nowrap;}",
-      ".sql-icon-btn .sql-btn-icon{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;flex:0 0 18px;background:transparent;}",
-      ".sql-icon-btn .sql-btn-icon svg{width:18px;height:18px;display:block;stroke:#17365f;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round;}",
+      ".sql-icon-btn{display:inline-flex;align-items:center;gap:8px;color:#20385f;box-shadow:inset 0 1px 0 rgba(255,255,255,.85);white-space:nowrap;}",
+      ".sql-icon-btn .sql-btn-icon{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;flex:0 0 20px;background:transparent!important;border:0!important;border-radius:0!important;box-shadow:none!important;padding:0!important;}",
+      ".sql-icon-btn .sql-btn-icon svg{width:20px;height:20px;display:block;stroke:#17365f;fill:none;stroke-width:1.85;stroke-linecap:round;stroke-linejoin:round;}",
       ".sql-toolbar.sql-hide-icons .sql-btn-icon{display:none !important;}",
       ".sql-icon-btn.sql-icon-export .sql-btn-icon svg,.sql-icon-btn.sql-icon-import .sql-btn-icon svg{stroke:#0f56c8;}",
       ".sql-icon-btn.sql-icon-run .sql-btn-icon svg{stroke:#107c10;}",
