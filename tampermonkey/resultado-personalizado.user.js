@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Resultado Personalizado
 // @namespace    http://tampermonkey.net/
-// @version      2026-07-08.05
+// @version      2026-07-09.01
 // @description  Jornada "Resultado Personalizado": Grid em acordeon, filtros, insights sob demanda, exportacao visivel/completa e performance para resultados grandes.
 // @compatible   edge
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -639,6 +639,13 @@
       + ".tm-cfg-item input[type='checkbox']{width:16px;height:16px;accent-color:#185abd;}\n"
       + ".tm-cfg-item select{width:100%;min-width:145px;font-family:" + UI_FONT_FAMILY + ";font-size:" + UI_FONT_SIZE_PX + "px;background:#fff;color:#20385f;border:1px solid #b7c5d8;border-radius:6px;padding:4px 7px;box-sizing:border-box;}\n"
       + ".tm-cfg-toggle-grid{display:grid;grid-template-columns:repeat(3,minmax(160px,1fr));gap:2px 14px;}\n"
+      + ".tm-cfg-toolbar-groups{display:grid;grid-template-columns:repeat(3,minmax(190px,1fr));gap:10px;}\n"
+      + ".tm-cfg-toolbar-group{border:1px solid #d6e0eb;border-radius:8px;background:linear-gradient(#ffffff,#fbfdff);padding:9px;min-width:0;}\n"
+      + ".tm-cfg-toolbar-group-head{display:grid;grid-template-columns:1fr 22px;align-items:center;gap:8px;padding-bottom:6px;margin-bottom:5px;border-bottom:1px solid #e5edf6;}\n"
+      + ".tm-cfg-toolbar-group-title{font-size:12px;font-weight:800;color:#20385f;line-height:1.2;}\n"
+      + ".tm-cfg-toolbar-group-hint{font-size:10px;color:#68758a;margin-top:1px;}\n"
+      + ".tm-cfg-toolbar-group .tm-cfg-item{margin:5px 0;}\n"
+      + ".tm-cfg-toolbar-group .tm-cfg-item span{font-weight:600;}\n"
       + ".tm-cfg-card .tm-cfg-item:first-of-type{margin-top:2px;}\n"
       + ".tm-cfg-actions{display:flex;justify-content:space-between;gap:8px;padding:10px 12px;border-top:1px solid #d6e0eb;background:#f8fbff;}\n"
       + ".tm-cfg-actions-left,.tm-cfg-actions-right{display:flex;align-items:center;gap:8px;}\n"
@@ -656,7 +663,8 @@
       + ".tm-col-row input{width:16px;height:16px;accent-color:#185abd;}\n"
       + ".tm-col-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#374151;font-weight:600;}\n"
       + ".tm-col-row.tm-hidden-by-search{display:none;}\n"
-      + "@media(max-width:820px){.tm-cfg-body{grid-template-columns:1fr;}.tm-cfg-card.tm-wide{grid-column:auto;}.tm-cfg-toggle-grid{grid-template-columns:1fr;}}\n"
+      + "@media(max-width:1000px){.tm-cfg-toolbar-groups{grid-template-columns:repeat(2,minmax(190px,1fr));}}\n"
+      + "@media(max-width:820px){.tm-cfg-body{grid-template-columns:1fr;}.tm-cfg-card.tm-wide{grid-column:auto;}.tm-cfg-toggle-grid,.tm-cfg-toolbar-groups{grid-template-columns:1fr;}}\n"
       + ".tm-grid-shell{position:relative;border:1px solid #cfdbe8;border-radius:8px;background:#fff;box-sizing:border-box;padding:6px;max-width:100%;box-shadow:inset 0 1px 0 rgba(255,255,255,.9);}\n"
       + ".tm-grid-shell.tm-has-resize{padding-right:14px;padding-bottom:14px;}\n"
       + "#divScroll{position:relative;overflow:auto !important;resize:none !important;min-height:" + GRID_MIN_HEIGHT + "px !important;border:none !important;padding:0 !important;box-sizing:border-box !important;background:transparent !important;color:#111 !important;width:100% !important;height:100% !important;}\n"
@@ -3153,28 +3161,93 @@
 
     var toolbarBtns = actionBarEl ? actionBarEl.querySelectorAll("button[data-tm-btn]") : [];
     if (toolbarBtns.length) {
-      var toggleGrid = document.createElement("div");
-      toggleGrid.className = "tm-cfg-toggle-grid";
-
+      var btnByKey = {};
       for (var b = 0; b < toolbarBtns.length; b++) {
         var btn = toolbarBtns[b];
         var key = btn.dataset.tmBtn;
         if (!key || key === "cfg" || key === "cfg_panel" || key === "toolbar_toggle") continue;
+        btnByKey[key] = btn;
+      }
 
+      var toolbarGroups = [
+        { title: "Copiar", hint: "Ações de cópia direta.", keys: ["copy_grid", "copy_table", "copy_cell", "copy_col", "copy_row"] },
+        { title: "Exportar visível", hint: "Respeita filtros e linhas exibidas.", keys: ["exp_csv", "exp_html", "exp_txt", "exp_xlsx", "exp_jpg", "copy_img"] },
+        { title: "Exportar completo", hint: "Inclui todo o resultado carregado.", keys: ["exp_csv_all", "exp_html_all", "exp_txt_all", "exp_xlsx_all"] },
+        { title: "Colunas", hint: "Organização e transformação de colunas.", keys: ["cols_pick", "cols_show", "rename_col", "split_date"] },
+        { title: "Layout", hint: "Ajustes rápidos de dimensão.", keys: ["fit_rows_50", "fit_cols_20", "fit_width", "fit_height", "reset"] },
+        { title: "Ações rápidas", hint: "Comandos soltos da barra.", keys: ["clear_filters"] }
+      ];
+
+      function mkToolbarItem(btn) {
         var row = document.createElement("label");
         row.className = "tm-cfg-item tm-toggle";
         var sp = document.createElement("span");
-        sp.textContent = btn.dataset.tmLabel || btn.textContent || key;
+        sp.textContent = btn.dataset.tmLabel || btn.textContent || btn.dataset.tmBtn;
         var cb = document.createElement("input");
         cb.type = "checkbox";
-        cb.checked = !isToolbarButtonHidden(key);
-        cb.dataset.toolbarKey = key;
+        cb.checked = !isToolbarButtonHidden(btn.dataset.tmBtn);
+        cb.dataset.toolbarKey = btn.dataset.tmBtn;
         row.appendChild(sp);
         row.appendChild(cb);
-        toggleGrid.appendChild(row);
+        return row;
       }
 
-      body.appendChild(mkCard("Botões da toolbar", "Marque apenas os comandos que você usa com frequência.", [toggleGrid], "tm-wide"));
+      function refreshGroupMaster(groupBox) {
+        var master = groupBox.querySelector("input[data-toolbar-group-master]");
+        var items = groupBox.querySelectorAll("input[type='checkbox'][data-toolbar-key]");
+        var checkedCount = 0;
+        for (var i = 0; i < items.length; i++) if (items[i].checked) checkedCount++;
+        master.checked = checkedCount === items.length;
+        master.indeterminate = checkedCount > 0 && checkedCount < items.length;
+      }
+
+      function mkToolbarGroup(group) {
+        var box = document.createElement("section");
+        box.className = "tm-cfg-toolbar-group";
+        var head = document.createElement("label");
+        head.className = "tm-cfg-toolbar-group-head";
+        var text = document.createElement("span");
+        var titleEl = document.createElement("span");
+        titleEl.className = "tm-cfg-toolbar-group-title";
+        titleEl.textContent = group.title;
+        var hintEl = document.createElement("span");
+        hintEl.className = "tm-cfg-toolbar-group-hint";
+        hintEl.textContent = group.hint;
+        text.appendChild(titleEl);
+        text.appendChild(hintEl);
+        var master = document.createElement("input");
+        master.type = "checkbox";
+        master.dataset.toolbarGroupMaster = group.title;
+        head.appendChild(text);
+        head.appendChild(master);
+        box.appendChild(head);
+
+        for (var i = 0; i < group.keys.length; i++) {
+          var itemBtn = btnByKey[group.keys[i]];
+          if (!itemBtn) continue;
+          box.appendChild(mkToolbarItem(itemBtn));
+        }
+
+        master.addEventListener("change", function () {
+          var items = box.querySelectorAll("input[type='checkbox'][data-toolbar-key]");
+          for (var k = 0; k < items.length; k++) items[k].checked = master.checked;
+          master.indeterminate = false;
+        });
+        box.addEventListener("change", function (e) {
+          if (e.target && e.target.dataset && e.target.dataset.toolbarKey) refreshGroupMaster(box);
+        });
+        refreshGroupMaster(box);
+        return box;
+      }
+
+      var groupedToolbar = document.createElement("div");
+      groupedToolbar.className = "tm-cfg-toolbar-groups";
+      for (var g = 0; g < toolbarGroups.length; g++) {
+        var hasItems = toolbarGroups[g].keys.some(function (key) { return !!btnByKey[key]; });
+        if (hasItems) groupedToolbar.appendChild(mkToolbarGroup(toolbarGroups[g]));
+      }
+
+      body.appendChild(mkCard("Botões da toolbar", "Escolha os comandos visíveis em cada agrupador.", [groupedToolbar], "tm-wide"));
     }
 
     modal.appendChild(body);

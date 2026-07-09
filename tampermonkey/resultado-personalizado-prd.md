@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Resultado Personalizado.user.js`
 
 Arquivo publicado: `tampermonkey/resultado-personalizado.user.js`
 
-Versao do script: `2026-07-08.05`
+Versao do script: `2026-07-09.01`
 
-Versao do documento: `2026-07-08.05`
+Versao do documento: `2026-07-09.01`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/resultado-personalizado.user.js`
@@ -190,6 +190,8 @@ Comportamentos existentes:
 - Preferencia persistente para o separador utilizado na exportacao CSV.
 - Preferencias de performance para resultado grande: linhas renderizadas inicialmente, lote de `Mostrar mais` e limite para pausar insights automaticos.
 - Comandos agrupados em menus compactos para reduzir confusao e excesso de botoes.
+- A lista `Botoes da toolbar` no painel de configuracoes e organizada pelos agrupadores reais da toolbar: `Copiar`, `Exportar visivel`, `Exportar completo`, `Colunas`, `Layout` e `Acoes rapidas`.
+- Cada agrupador possui um checkbox mestre para mostrar ou ocultar todos os comandos daquele grupo.
 - `Salvar JPG` e `Reset completo` ocultos por padrao na toolbar, com possibilidade de reativacao no painel.
 
 ## 6. Persistencia e Estado
