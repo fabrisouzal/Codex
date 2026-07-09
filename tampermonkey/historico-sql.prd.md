@@ -2,11 +2,11 @@
 
 ## Versao
 
-- Versao do PRD: `2026-06-18.01`
-- Versao do userscript documentada: `2026-06-18.01`
+- Versao do PRD: `2026-07-09.01`
+- Versao do userscript documentada: `2026-07-09.01`
 - Arquivo documentado: `tampermonkey/historico-sql.user.js`
-- Data de referencia: `2026-06-18`
-- Persistencia vigente: `localStorage`
+- Data de referencia: `2026-07-09`
+- Persistencia vigente: `IndexedDB` para historico, com fallback e migracao do `localStorage`
 
 ## 1. Visao Geral
 
@@ -59,11 +59,11 @@ Sem o script, o usuario depende de memoria, arquivos soltos, conversas ou copiar
 
 ### 6.1 Captura de historico
 
-O script salva queries no `localStorage` do navegador.
+O script salva queries no `IndexedDB` do navegador, mantendo fallback em `localStorage` quando o navegador bloquear IndexedDB.
 
 Comportamentos existentes:
 
-- captura automatica ativada por padrao;
+- captura automatica geral desligada por padrao;
 - captura ao clicar no botao Executar;
 - captura ao pressionar `Ctrl+Enter`;
 - ignorar duplicatas consecutivas iguais, incrementando contador de execucao;
@@ -332,14 +332,23 @@ Essa integracao permite:
 
 ### Armazenamento
 
-O script usa `localStorage`.
+O script usa `IndexedDB` para o historico principal e `localStorage` para configuracoes, estado visual, buscas recentes e metadados de migracao.
 
-Chaves principais:
+Banco principal:
 
-- `sql_helper_history_execucao_direta_v6_export_import`;
+- Banco IndexedDB: `sql_helper_history_db_v1`;
+- Object store: `history_items`;
+- Indices: `lastUsedAt`, `createdAt`, `isFavorite`.
+
+Chaves principais em `localStorage`:
+
+- `sql_helper_history_execucao_direta_v6_export_import` como origem legada e backup de migracao;
+- `sql_helper_history_indexeddb_migrated_v1`;
 - `sql_helper_execucao_direta_settings_v3`;
 - `sql_helper_execucao_direta_ui_state_v1`;
 - `sql_helper_recent_searches_v1`.
+
+Na primeira execucao da versao com IndexedDB, o historico legado do `localStorage` e importado para o banco local. O script preserva a chave legada como backup e registra o status da migracao.
 
 ### Modelo de item do historico
 
@@ -374,7 +383,8 @@ Cada item possui:
 
 - Evita inicializacao duplicada por flag global.
 - Usa fallbacks para localizar editor e botao Executar.
-- Possui tratamento de erro em leitura/escrita de `localStorage`.
+- Possui tratamento de erro em leitura/escrita do IndexedDB e fallback para `localStorage`.
+- Exibe aviso visual quando a gravacao do historico falha.
 - Importacao valida estrutura minima antes de salvar.
 
 ### UX
@@ -384,6 +394,7 @@ Cada item possui:
 - Acoes dos cards aparecem de forma contextual.
 - Temas e controle de icones reduzem fadiga visual.
 - Feedback visual em copiar/colar.
+- O menu Configuracoes mostra status de armazenamento, volume aproximado, status de migracao e acoes de manutencao.
 
 ## 9. Limitacoes Conhecidas
 
@@ -392,7 +403,7 @@ Cada item possui:
 - Sem banco de dados externo.
 - Sem IA remota ativa; sugestoes de nome sao heuristicas locais.
 - Realce SQL e leve, focado em leitura, nao em parsing SQL completo.
-- O limite alto de historico pode aumentar consumo de `localStorage` e impactar performance em bases muito grandes.
+- O limite alto de historico pode aumentar consumo de armazenamento local e impactar performance em bases muito grandes.
 - Exportacao CSV depende do formato produzido pelo proprio script para melhor compatibilidade de reimportacao.
 
 ## 10. Criterios de Aceite do Estado Atual
@@ -405,9 +416,12 @@ Cada item possui:
 - O usuario deve conseguir favoritar, renomear, etiquetar, comentar, copiar e excluir uma query.
 - O menu Etiquetas deve permitir renomear e excluir etiquetas globalmente.
 - O menu Configuracoes deve salvar preferencias e restaurar padroes.
+- O menu Configuracoes deve exibir status de armazenamento e permitir atualizar o diagnostico.
+- O usuario deve conseguir remover duplicadas e aplicar o limite configurado como manutencao local.
 - Exportacao JSON/CSV deve gerar arquivo baixavel.
 - Importacao JSON/CSV deve mesclar ou substituir conforme modo escolhido.
 - Os temas Office claro, Suave, Escuro e Alto contraste devem ser aplicaveis.
+- Ao atualizar de versoes antigas, o historico salvo em `localStorage` deve ser migrado para IndexedDB sem perda intencional de dados.
 - O script deve passar em `node --check`.
 
 ## 11. Fora de Escopo Atual

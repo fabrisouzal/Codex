@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Histórico SQL
 // @namespace    http://tampermonkey.net/
-// @version      2026-06-25.01
+// @version      2026-07-09.01
 // @description  Histórico de queries com favoritos, etiquetas, comentários, export/import e painel de configurações
 // @compatible   edge
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -30,6 +30,10 @@
      ********************************************************************/
 
     const HISTORY_STORAGE_KEY = 'sql_helper_history_execucao_direta_v6_export_import';
+    const HISTORY_IDB_NAME = 'sql_helper_history_db_v1';
+    const HISTORY_IDB_STORE = 'history_items';
+    const HISTORY_IDB_VERSION = 1;
+    const HISTORY_IDB_MIGRATION_KEY = 'sql_helper_history_indexeddb_migrated_v1';
     const SETTINGS_STORAGE_KEY = 'sql_helper_execucao_direta_settings_v3';
     const UI_STATE_STORAGE_KEY = 'sql_helper_execucao_direta_ui_state_v1';
     const RECENT_SEARCHES_KEY = 'sql_helper_recent_searches_v1';
@@ -103,10 +107,14 @@
         settingsOverlay: null,
         tagsOverlay: null,
         tagsListContainer: null,
+        storageStatusBox: null,
 
         hookedRunButton: null,
         mutationObserver: null,
-        hookRunButtonTimer: null
+        hookRunButtonTimer: null,
+        historyStorageMode: 'loading',
+        historyStorageError: '',
+        historyLastSaveFailed: false
     };
 
     let historyCache = null;
@@ -136,6 +144,223 @@
                 migrated.schemaVersion = SETTINGS_SCHEMA_VERSION;
             }
             return migrated;
+        }
+    };
+
+    const HistoryStore = {
+        db: null,
+        initialized: false,
+        mode: 'loading',
+        error: '',
+        migrationInfo: null,
+
+        async init() {
+            if (this.initialized) return;
+
+            if (!window.indexedDB) {
+                this.mode = 'localStorage';
+                this.error = 'IndexedDB indisponivel; usando localStorage.';
+                this.loadFromLocalStorageCache();
+                this.initialized = true;
+                state.historyStorageMode = this.mode;
+                state.historyStorageError = this.error;
+                return;
+            }
+
+            try {
+                this.db = await this.openDb();
+                this.mode = 'indexedDB';
+                await this.migrateLegacyLocalStorage();
+                const items = await this.getAll();
+                historyCache = this.sortAndNormalize(items);
+                rebuildHistorySearchIndex(historyCache);
+            } catch (e) {
+                console.error('[SQL Helper] IndexedDB indisponivel; usando localStorage:', e);
+                this.mode = 'localStorage';
+                this.error = e?.message || String(e || 'Erro ao abrir IndexedDB.');
+                this.loadFromLocalStorageCache();
+            } finally {
+                this.initialized = true;
+                state.historyStorageMode = this.mode;
+                state.historyStorageError = this.error;
+            }
+        },
+
+        openDb() {
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open(HISTORY_IDB_NAME, HISTORY_IDB_VERSION);
+                req.onupgradeneeded = event => {
+                    const db = event.target.result;
+                    if (!db.objectStoreNames.contains(HISTORY_IDB_STORE)) {
+                        const store = db.createObjectStore(HISTORY_IDB_STORE, { keyPath: 'id' });
+                        store.createIndex('lastUsedAt', 'lastUsedAt', { unique: false });
+                        store.createIndex('createdAt', 'createdAt', { unique: false });
+                        store.createIndex('isFavorite', 'isFavorite', { unique: false });
+                    }
+                };
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error || new Error('Falha ao abrir IndexedDB.'));
+                req.onblocked = () => reject(new Error('A abertura do IndexedDB foi bloqueada por outra aba.'));
+            });
+        },
+
+        transaction(storeMode, callback) {
+            return new Promise((resolve, reject) => {
+                if (!this.db) {
+                    reject(new Error('Banco IndexedDB nao inicializado.'));
+                    return;
+                }
+                const tx = this.db.transaction(HISTORY_IDB_STORE, storeMode);
+                const store = tx.objectStore(HISTORY_IDB_STORE);
+                let result;
+                try {
+                    result = callback(store);
+                } catch (e) {
+                    reject(e);
+                    return;
+                }
+                tx.oncomplete = () => resolve(result);
+                tx.onerror = () => reject(tx.error || new Error('Transacao IndexedDB falhou.'));
+                tx.onabort = () => reject(tx.error || new Error('Transacao IndexedDB abortada.'));
+            });
+        },
+
+        requestToPromise(req) {
+            return new Promise((resolve, reject) => {
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error || new Error('Operacao IndexedDB falhou.'));
+            });
+        },
+
+        async getAll() {
+            return this.transaction('readonly', store => this.requestToPromise(store.getAll()));
+        },
+
+        async replaceAll(items) {
+            await this.transaction('readwrite', store => {
+                store.clear();
+                for (const item of items) store.put(item);
+            });
+        },
+
+        async clear() {
+            await this.replaceAll([]);
+        },
+
+        sortAndNormalize(items) {
+            return (Array.isArray(items) ? items : [])
+                .map(normalizeItem)
+                .filter(Boolean)
+                .sort((a, b) => new Date(b.lastUsedAt) - new Date(a.lastUsedAt));
+        },
+
+        loadFromLocalStorageCache() {
+            const parsed = StorageService.getJson(HISTORY_STORAGE_KEY, []);
+            historyCache = this.sortAndNormalize(parsed);
+            rebuildHistorySearchIndex(historyCache);
+        },
+
+        async migrateLegacyLocalStorage() {
+            const previousMigration = StorageService.getJson(HISTORY_IDB_MIGRATION_KEY, null);
+            if (previousMigration?.done) {
+                this.migrationInfo = previousMigration;
+                return;
+            }
+
+            const legacy = StorageService.getJson(HISTORY_STORAGE_KEY, []);
+            if (!Array.isArray(legacy) || !legacy.length) {
+                this.migrationInfo = {
+                    done: true,
+                    migratedAt: new Date().toISOString(),
+                    migratedCount: 0,
+                    source: 'empty'
+                };
+                StorageService.setJson(HISTORY_IDB_MIGRATION_KEY, this.migrationInfo, 'status da migracao');
+                return;
+            }
+
+            const current = await this.getAll();
+            const byQuery = new Map();
+            for (const item of this.sortAndNormalize(current)) byQuery.set(getItemKey(item), item);
+
+            let migratedCount = 0;
+            for (const legacyItem of this.sortAndNormalize(legacy)) {
+                const key = getItemKey(legacyItem);
+                const existing = byQuery.get(key);
+                if (!existing) {
+                    byQuery.set(key, legacyItem);
+                    migratedCount++;
+                    continue;
+                }
+
+                existing.lastUsedAt = new Date(Math.max(new Date(existing.lastUsedAt), new Date(legacyItem.lastUsedAt))).toISOString();
+                existing.createdAt = new Date(Math.min(new Date(existing.createdAt), new Date(legacyItem.createdAt))).toISOString();
+                existing.runCount = Math.max(existing.runCount || 1, legacyItem.runCount || 1);
+                existing.isFavorite = existing.isFavorite || legacyItem.isFavorite;
+                existing.tags = [...new Set([...(existing.tags || []), ...(legacyItem.tags || [])])]
+                    .sort((a, b) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' }));
+                if (!existing.comment && legacyItem.comment) existing.comment = legacyItem.comment;
+            }
+
+            const merged = this.sortAndNormalize([...byQuery.values()]);
+            await this.replaceAll(merged);
+            this.migrationInfo = {
+                done: true,
+                migratedAt: new Date().toISOString(),
+                migratedCount,
+                legacyCount: legacy.length,
+                totalAfterMigration: merged.length,
+                source: HISTORY_STORAGE_KEY
+            };
+            StorageService.setJson(HISTORY_IDB_MIGRATION_KEY, this.migrationInfo, 'status da migracao');
+        },
+
+        async save(items) {
+            const cleaned = this.sortAndNormalize(items).slice(0, getHistoryMaxItems());
+            historyCache = cleaned;
+            rebuildHistorySearchIndex(historyCache);
+            state.historyLastSaveFailed = false;
+
+            if (this.mode === 'indexedDB') {
+                try {
+                    await this.replaceAll(cleaned);
+                    return true;
+                } catch (e) {
+                    state.historyLastSaveFailed = true;
+                    state.historyStorageError = e?.message || String(e || 'Erro ao salvar no IndexedDB.');
+                    console.error('[SQL Helper] Erro ao salvar historico no IndexedDB:', e);
+                    showToast('Falha ao salvar historico no IndexedDB. Exporte um backup e tente novamente.', 'error');
+                    return false;
+                }
+            }
+
+            const ok = StorageService.setJson(HISTORY_STORAGE_KEY, cleaned, 'historico');
+            state.historyLastSaveFailed = !ok;
+            if (!ok) {
+                state.historyStorageError = 'Limite do localStorage atingido ou escrita bloqueada.';
+                showToast('Limite de armazenamento atingido. Exporte o historico ou reduza itens antigos.', 'error');
+            }
+            return ok;
+        },
+
+        async getStatus() {
+            const history = loadHistory();
+            const approxBytes = getUtf8Bytes(JSON.stringify(history));
+            const localBytes = getLocalStorageApproxBytes();
+            let estimate = null;
+            try {
+                if (navigator.storage?.estimate) estimate = await navigator.storage.estimate();
+            } catch {}
+            return {
+                mode: this.mode,
+                error: state.historyStorageError || this.error,
+                migrationInfo: this.migrationInfo || StorageService.getJson(HISTORY_IDB_MIGRATION_KEY, null),
+                items: history.length,
+                approxBytes,
+                localBytes,
+                estimate,
+                lastSaveFailed: state.historyLastSaveFailed
+            };
         }
     };
 
@@ -238,6 +463,49 @@
 
     function clamp(num, min, max) {
         return Math.max(min, Math.min(max, num));
+    }
+
+    function getUtf8Bytes(str) {
+        try {
+            return new Blob([String(str || '')]).size;
+        } catch {
+            return String(str || '').length;
+        }
+    }
+
+    function formatBytes(bytes) {
+        const value = Number(bytes) || 0;
+        if (value < 1024) return `${value} B`;
+        if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+        if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(2)} MB`;
+        return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
+    }
+
+    function getLocalStorageApproxBytes() {
+        let total = 0;
+        try {
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                total += getUtf8Bytes(key) + getUtf8Bytes(localStorage.getItem(key));
+            }
+        } catch {}
+        return total;
+    }
+
+    function showToast(message, type = 'info') {
+        const existing = document.getElementById('sql-helper-toast');
+        if (existing) existing.remove();
+
+        const toast = document.createElement('div');
+        toast.id = 'sql-helper-toast';
+        toast.className = `sql-helper-toast ${type === 'error' ? 'error' : ''}`;
+        toast.textContent = message;
+        document.body.appendChild(toast);
+
+        setTimeout(() => {
+            toast.classList.add('leaving');
+            setTimeout(() => toast.remove(), 220);
+        }, type === 'error' ? 7200 : 3600);
     }
 
     function getSettings() {
@@ -813,10 +1081,7 @@
 
     function loadHistory() {
         if (historyCache) return historyCache;
-        const parsed = StorageService.getJson(HISTORY_STORAGE_KEY, []);
-        historyCache = Array.isArray(parsed)
-            ? parsed.map(normalizeItem).filter(Boolean)
-            : [];
+        HistoryStore.loadFromLocalStorageCache();
         rebuildHistorySearchIndex(historyCache);
         return historyCache;
     }
@@ -829,10 +1094,10 @@
                 .sort((a, b) => new Date(b.lastUsedAt) - new Date(a.lastUsedAt))
                 .slice(0, getHistoryMaxItems());
 
-            if (StorageService.setJson(HISTORY_STORAGE_KEY, cleaned, 'historico')) {
-                historyCache = cleaned;
-                rebuildHistorySearchIndex(historyCache);
-            }
+            historyCache = cleaned;
+            rebuildHistorySearchIndex(historyCache);
+            HistoryStore.save(cleaned).then(() => refreshStorageStatusBox());
+            // Persistencia assincrona: falhas sao tratadas dentro de HistoryStore.save().
         } catch (e) {
             console.error('[SQL Helper] Erro ao salvar histórico:', e);
         }
@@ -912,6 +1177,73 @@
     function clearHistory() {
         saveHistory([]);
         renderHistoryList();
+    }
+
+    function removeDuplicateHistoryEntries() {
+        const history = loadHistory();
+        const byQuery = new Map();
+        let removed = 0;
+
+        for (const item of history) {
+            const key = getItemKey(item);
+            const existing = byQuery.get(key);
+            if (!existing) {
+                byQuery.set(key, { ...item });
+                continue;
+            }
+
+            existing.lastUsedAt = new Date(Math.max(new Date(existing.lastUsedAt), new Date(item.lastUsedAt))).toISOString();
+            existing.createdAt = new Date(Math.min(new Date(existing.createdAt), new Date(item.createdAt))).toISOString();
+            existing.runCount = Math.max(existing.runCount || 1, item.runCount || 1);
+            existing.isFavorite = existing.isFavorite || item.isFavorite;
+            existing.tags = [...new Set([...(existing.tags || []), ...(item.tags || [])])]
+                .sort((a, b) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' }));
+            if (!existing.comment && item.comment) existing.comment = item.comment;
+            removed++;
+        }
+
+        saveHistory([...byQuery.values()]);
+        renderHistoryList();
+        return removed;
+    }
+
+    function trimHistoryToConfiguredLimit() {
+        const history = loadHistory();
+        const max = getHistoryMaxItems();
+        const trimmed = history
+            .slice()
+            .sort((a, b) => new Date(b.lastUsedAt) - new Date(a.lastUsedAt))
+            .slice(0, max);
+        const removed = Math.max(0, history.length - trimmed.length);
+        if (removed) {
+            saveHistory(trimmed);
+            renderHistoryList();
+        }
+        return removed;
+    }
+
+    async function refreshStorageStatusBox() {
+        if (!state.storageStatusBox) return;
+        const status = await HistoryStore.getStatus();
+        const quota = status.estimate?.quota ? formatBytes(status.estimate.quota) : 'indisponivel';
+        const usage = status.estimate?.usage ? formatBytes(status.estimate.usage) : 'indisponivel';
+        const migration = status.migrationInfo?.done
+            ? `Migracao: ${status.migrationInfo.migratedCount || 0} item(ns) importado(s) do localStorage.`
+            : 'Migracao: pendente.';
+        const error = status.error ? `<div class="sql-storage-warning">${escapeHtml(status.error)}</div>` : '';
+
+        state.storageStatusBox.innerHTML = `
+            <div class="sql-storage-grid">
+                <span>Motor</span><strong>${status.mode === 'indexedDB' ? 'IndexedDB' : 'localStorage fallback'}</strong>
+                <span>Itens</span><strong>${status.items}</strong>
+                <span>Historico aproximado</span><strong>${formatBytes(status.approxBytes)}</strong>
+                <span>localStorage usado</span><strong>${formatBytes(status.localBytes)}</strong>
+                <span>Uso estimado do navegador</span><strong>${usage} / ${quota}</strong>
+            </div>
+            <div class="sql-storage-note">${escapeHtml(migration)}</div>
+            ${status.lastSaveFailed ? '<div class="sql-storage-warning">A ultima gravacao falhou. Exporte um backup antes de continuar.</div>' : ''}
+            ${error}
+        `;
     }
 
     function collectAllTags(history) {
@@ -1957,6 +2289,68 @@
                 gap: 8px;
                 flex-wrap: wrap;
             }
+            .sql-storage-status {
+                border: 1px solid rgba(148,163,184,.26);
+                border-radius: 6px;
+                padding: 8px;
+                margin-bottom: 10px;
+                background: rgba(15,23,42,.18);
+                font-size: 10px;
+                color: #607089;
+            }
+            .sql-storage-grid {
+                display: grid;
+                grid-template-columns: minmax(0,1fr) auto;
+                gap: 5px 10px;
+                align-items: center;
+            }
+            .sql-storage-grid strong {
+                color: #20385f;
+                font-weight: 700;
+                text-align: right;
+                white-space: nowrap;
+            }
+            .sql-storage-note {
+                margin-top: 7px;
+                color: #607089;
+                line-height: 1.35;
+            }
+            .sql-storage-warning {
+                margin-top: 7px;
+                border: 1px solid #d99a31;
+                border-radius: 6px;
+                padding: 6px 7px;
+                color: #6b3d00;
+                background: #fff7e6;
+                line-height: 1.35;
+            }
+            .sql-helper-toast {
+                position: fixed;
+                right: 18px;
+                bottom: 18px;
+                z-index: 1000010;
+                max-width: min(420px, calc(100vw - 36px));
+                border: 1px solid #8fb0d8;
+                border-radius: 8px;
+                padding: 10px 12px;
+                background: #f8fbff;
+                color: #20385f;
+                box-shadow: 0 10px 28px rgba(32,56,95,.24);
+                font-size: 12px;
+                line-height: 1.35;
+                opacity: 1;
+                transform: translateY(0);
+                transition: opacity .2s ease, transform .2s ease;
+            }
+            .sql-helper-toast.error {
+                border-color: #d99a31;
+                background: #fff7e6;
+                color: #6b3d00;
+            }
+            .sql-helper-toast.leaving {
+                opacity: 0;
+                transform: translateY(8px);
+            }
             #sql-helper-list {
                 flex: 1;
                 min-height: 0;
@@ -2435,6 +2829,12 @@
             body.sql-helper-theme-dark .sql-settings-label span,
             body.sql-helper-theme-dark #sql-helper-footer,
             body.sql-helper-theme-dark .sql-helper-export-caption { color: #94a3b8; }
+            body.sql-helper-theme-dark .sql-storage-status { background: #020617; border-color: #334155; color: #94a3b8; }
+            body.sql-helper-theme-dark .sql-storage-grid strong { color: #e5e7eb; }
+            body.sql-helper-theme-dark .sql-storage-note { color: #94a3b8; }
+            body.sql-helper-theme-dark .sql-storage-warning,
+            body.sql-helper-theme-dark .sql-helper-toast.error { background: #451a03; border-color: #f59e0b; color: #fed7aa; }
+            body.sql-helper-theme-dark .sql-helper-toast { background: #0f172a; border-color: #475569; color: #e5e7eb; }
             body.sql-helper-theme-dark .sql-helper-btn,
             body.sql-helper-theme-dark .sql-card-actions button,
             body.sql-helper-theme-dark .sql-card-header-actions button,
@@ -2485,6 +2885,12 @@
             body.sql-helper-theme-contrast .sql-card-name,
             body.sql-helper-theme-contrast .sql-settings-label strong,
             body.sql-helper-theme-contrast .sql-card-query pre { color: #111827; }
+            body.sql-helper-theme-contrast .sql-storage-status,
+            body.sql-helper-theme-contrast .sql-storage-warning,
+            body.sql-helper-theme-contrast .sql-helper-toast,
+            body.sql-helper-theme-contrast .sql-helper-toast.error { background: #fff; border-color: #111827; color: #111827; box-shadow: none; }
+            body.sql-helper-theme-contrast .sql-storage-grid strong,
+            body.sql-helper-theme-contrast .sql-storage-note { color: #111827; }
             body.sql-helper-theme-contrast .sql-line-no { color: #111827; border-right-color: #111827; opacity: 1; }
             body.sql-helper-theme-contrast .sql-syn-keyword,
             body.sql-helper-theme-contrast .sql-syn-type,
@@ -3029,6 +3435,7 @@
         if (showIcons) showIcons.checked = settings.interface.showIcons;
 
         state.settingsOverlay.style.display = 'flex';
+        refreshStorageStatusBox();
     }
 
     function createSettingsRow({ title, description, control }) {
@@ -3240,6 +3647,10 @@
         dangerSection.className = 'sql-settings-section';
         dangerSection.innerHTML = '<div class="sql-settings-section-title">Dados e restauração</div>';
 
+        const storageStatus = document.createElement('div');
+        storageStatus.className = 'sql-storage-status';
+        storageStatus.textContent = 'Carregando status do armazenamento...';
+
         const dangerActions = document.createElement('div');
         dangerActions.className = 'sql-settings-danger-actions';
 
@@ -3269,8 +3680,35 @@
             }
         });
 
-        dangerActions.append(clearRecentBtn, resetSettingsBtn);
-        dangerSection.appendChild(dangerActions);
+        const removeDupesBtn = document.createElement('button');
+        removeDupesBtn.className = 'sql-helper-btn danger';
+        setIconButtonContent(removeDupesBtn, 'Remover duplicadas', 'clear');
+        removeDupesBtn.addEventListener('click', () => {
+            if (!confirm('Mesclar queries duplicadas mantendo metadados e remover entradas repetidas?')) return;
+            const removed = removeDuplicateHistoryEntries();
+            refreshStorageStatusBox();
+            alert(removed ? `Duplicadas removidas: ${removed}` : 'Nenhuma duplicada encontrada.');
+        });
+
+        const trimLimitBtn = document.createElement('button');
+        trimLimitBtn.className = 'sql-helper-btn danger';
+        setIconButtonContent(trimLimitBtn, 'Aplicar limite', 'delete');
+        trimLimitBtn.addEventListener('click', () => {
+            const max = getHistoryMaxItems();
+            if (!confirm(`Manter apenas os ${max} itens mais recentes e remover o excedente?`)) return;
+            const removed = trimHistoryToConfiguredLimit();
+            refreshStorageStatusBox();
+            alert(removed ? `Itens removidos: ${removed}` : 'O historico ja esta dentro do limite configurado.');
+        });
+
+        const refreshStorageBtn = document.createElement('button');
+        refreshStorageBtn.className = 'sql-helper-btn secondary';
+        setIconButtonContent(refreshStorageBtn, 'Atualizar status', 'reset');
+        refreshStorageBtn.addEventListener('click', refreshStorageStatusBox);
+
+        dangerActions.append(clearRecentBtn, removeDupesBtn, trimLimitBtn, refreshStorageBtn, resetSettingsBtn);
+        dangerSection.append(storageStatus, dangerActions);
+        state.storageStatusBox = storageStatus;
 
         sections.append(captureSection, historySection, interfaceSection, dangerSection);
         body.appendChild(sections);
@@ -4062,8 +4500,10 @@
     function setupHistoryStorageSync() {
         window.addEventListener('storage', event => {
             if (event.key !== HISTORY_STORAGE_KEY) return;
-            invalidateHistoryCache();
-            renderHistoryList();
+            if (HistoryStore.mode === 'localStorage') {
+                invalidateHistoryCache();
+                renderHistoryList();
+            }
         });
     }
 
@@ -4071,7 +4511,8 @@
      * INIT
      ********************************************************************/
 
-    function init() {
+    async function init() {
+        await HistoryStore.init();
         createUI();
         setupKeyListener();
         setupRunButtonHook();

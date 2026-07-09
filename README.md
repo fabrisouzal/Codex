@@ -9,7 +9,7 @@ Instale cada script pelo link abaixo. Depois da primeira instalacao, o Tampermon
 | Script | Versao vigente | Instalacao/atualizacao |
 | --- | --- | --- |
 | Editor de Query | 2026.06.25.04 | https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/editor-de-query.user.js |
-| Historico SQL | 2026-06-25.01 | https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/historico-sql.user.js |
+| Historico SQL | 2026-07-09.01 | https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/historico-sql.user.js |
 | Resultado Personalizado | 2026-06-25.01 | https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/resultado-personalizado.user.js |
 
 ### Documentacao
