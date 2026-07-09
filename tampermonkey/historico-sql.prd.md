@@ -2,8 +2,8 @@
 
 ## Versao
 
-- Versao do PRD: `2026-07-09.01`
-- Versao do userscript documentada: `2026-07-09.01`
+- Versao do PRD: `2026-07-09.02`
+- Versao do userscript documentada: `2026-07-09.02`
 - Arquivo documentado: `tampermonkey/historico-sql.user.js`
 - Data de referencia: `2026-07-09`
 - Persistencia vigente: `IndexedDB` para historico, com fallback e migracao do `localStorage`
@@ -229,6 +229,13 @@ Funcionalidades existentes:
 ### 6.9 Exportacao e importacao
 
 O script permite portabilidade do historico.
+
+O modal de Exportar/Importar organiza as acoes em cards visuais:
+
+- introducao com contexto de backup e filtros ativos;
+- card de exportacao com opcoes JSON e CSV;
+- card de importacao com modo de importacao e seletor de arquivo;
+- card de zona de perigo separado das acoes comuns.
 
 Exportacao:
 

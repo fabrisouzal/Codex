@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Histórico SQL
 // @namespace    http://tampermonkey.net/
-// @version      2026-07-09.01
+// @version      2026-07-09.02
 // @description  Histórico de queries com favoritos, etiquetas, comentários, export/import e painel de configurações
 // @compatible   edge
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -2204,6 +2204,63 @@
                 margin-top: 6px;
             }
 
+            .sql-export-intro {
+                display: flex;
+                flex-direction: column;
+                gap: 3px;
+                border: 1px solid #1f2937;
+                border-radius: 8px;
+                padding: 10px 12px;
+                background: #06101f;
+                color: #cbd5e1;
+                line-height: 1.35;
+                margin-bottom: 12px;
+            }
+            .sql-export-intro strong {
+                color: #f8fafc;
+                font-size: 13px;
+            }
+            .sql-export-intro span { font-size: 11px; }
+            .sql-export-card {
+                border: 1px solid #1f2937;
+                border-radius: 8px;
+                padding: 12px;
+                background: #06101f;
+                min-width: 0;
+            }
+            .sql-export-card-title {
+                color: #f8fafc;
+                font-size: 12px;
+                font-weight: 800;
+                text-transform: uppercase;
+                letter-spacing: .4px;
+                margin-bottom: 5px;
+            }
+            .sql-export-card-desc {
+                color: #94a3b8;
+                font-size: 11px;
+                line-height: 1.35;
+                margin-bottom: 10px;
+            }
+            .sql-export-action-row {
+                display: grid;
+                grid-template-columns: minmax(132px,auto) minmax(0,1fr);
+                gap: 10px;
+                align-items: center;
+                padding: 8px 0;
+                border-top: 1px solid rgba(148,163,184,.18);
+            }
+            .sql-export-action-row:first-child { border-top: 0; padding-top: 0; }
+            .sql-export-action-row:last-child { padding-bottom: 0; }
+            .sql-export-field-title {
+                font-size: 10px;
+                font-weight: 800;
+                text-transform: uppercase;
+                letter-spacing: .35px;
+                color: #94a3b8;
+                margin-bottom: 5px;
+            }
+
             #sql-helper-export-options,
             #sql-helper-import-options {
                 display: flex;
@@ -2211,11 +2268,61 @@
                 gap: 6px;
             }
 
-            .sql-helper-export-caption { font-size: 11px; color: #9ca3af; }
+            .sql-helper-export-caption {
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+                min-width: 0;
+                font-size: 11px;
+                color: #9ca3af;
+                line-height: 1.35;
+            }
+            .sql-helper-export-caption strong {
+                color: #e5e7eb;
+                font-size: 11px;
+                font-weight: 700;
+            }
+            .sql-helper-export-caption span {
+                min-width: 0;
+                overflow-wrap: anywhere;
+            }
             .sql-helper-import-row { display: flex; flex-direction: column; gap: 6px; }
-            .sql-helper-import-mode { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: #e5e7eb; }
-            .sql-helper-import-mode label { display: flex; align-items: center; gap: 4px; }
-            .sql-helper-import-file { display: flex; align-items: center; gap: 6px; }
+            .sql-helper-import-mode {
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+                font-size: 11px;
+                color: #e5e7eb;
+                border: 1px solid rgba(148,163,184,.18);
+                border-radius: 7px;
+                padding: 9px;
+                background: rgba(2,6,23,.22);
+            }
+            .sql-helper-import-mode label {
+                display: flex;
+                align-items: center;
+                gap: 7px;
+                min-height: 22px;
+                cursor: pointer;
+            }
+            .sql-helper-import-file {
+                display: grid;
+                grid-template-columns: minmax(0,1fr) auto;
+                align-items: center;
+                gap: 8px;
+                margin-top: 4px;
+            }
+            .sql-helper-import-input {
+                min-width: 0;
+                width: 100%;
+                border: 1px solid #374151;
+                border-radius: 7px;
+                background: #020617;
+                color: #e5e7eb;
+                padding: 5px;
+                font-size: 11px;
+                box-sizing: border-box;
+            }
 
             #sql-helper-autosave-wrapper {
                 display: flex;
@@ -2641,7 +2748,10 @@
                 width: min(920px,94vw);
                 max-height: 88vh;
             }
-            #sql-helper-export-modal { width: min(760px,94vw); }
+            #sql-helper-export-modal {
+                width: min(820px,94vw);
+                max-height: min(760px,90vh);
+            }
             #sql-helper-tags-modal { width: min(720px,94vw); }
             #sql-helper-comment-header,
             #sql-helper-export-header,
@@ -2656,6 +2766,9 @@
             #sql-helper-settings-body {
                 background: #fbfdff;
                 overflow: auto;
+            }
+            #sql-helper-export-body {
+                padding: 14px;
             }
             .sql-tag-manager-row {
                 background: #fff;
@@ -2684,14 +2797,50 @@
                 grid-template-columns: minmax(280px,1fr) minmax(280px,1fr);
                 gap: 12px;
             }
-            #sql-helper-export-sections > div {
+            #sql-helper-export-sections > div,
+            .sql-export-intro {
                 background: #fff;
                 border: 1px solid #d6e0eb;
                 border-radius: 8px;
-                padding: 11px;
             }
+            #sql-helper-export-sections > div { padding: 12px; }
             #sql-helper-export-sections > div[style*="border-top"] {
                 grid-column: 1 / -1;
+            }
+            .sql-export-danger-card { grid-column: 1 / -1; }
+            .sql-export-intro {
+                color: #607089;
+                box-shadow: inset 3px 0 0 #8fb0d8;
+            }
+            .sql-export-intro strong,
+            .sql-export-card-title,
+            .sql-helper-export-caption strong {
+                color: #20385f;
+            }
+            .sql-export-card-desc,
+            .sql-helper-export-caption,
+            .sql-export-field-title {
+                color: #68758a;
+            }
+            .sql-export-action-row {
+                border-top-color: rgba(32,56,95,.10);
+            }
+            .sql-helper-import-mode {
+                color: #374151;
+                background: #f8fbff;
+                border-color: #d6e0eb;
+            }
+            .sql-helper-import-input {
+                color: #20385f;
+                background: #fff;
+                border-color: #b7c5d8;
+            }
+            .sql-export-danger-card {
+                background: #fffaf0 !important;
+                border-color: #f0c36d !important;
+            }
+            .sql-export-danger-card .sql-export-card-title {
+                color: #6b3d00;
             }
             .sql-settings-section {
                 background: #fff;
@@ -2767,7 +2916,14 @@
             body.sql-helper-theme-soft .sql-tags-manager-card,
             body.sql-helper-theme-soft .sql-tag-manager-row,
             body.sql-helper-theme-soft .sql-settings-section,
-            body.sql-helper-theme-soft #sql-helper-export-sections > div { border-color: #d5dfce; }
+            body.sql-helper-theme-soft #sql-helper-export-sections > div,
+            body.sql-helper-theme-soft .sql-export-intro { border-color: #d5dfce; }
+            body.sql-helper-theme-soft .sql-export-intro,
+            body.sql-helper-theme-soft #sql-helper-export-sections > div,
+            body.sql-helper-theme-soft .sql-helper-import-mode { background: #fff; }
+            body.sql-helper-theme-soft .sql-export-card-title,
+            body.sql-helper-theme-soft .sql-helper-export-caption strong { color: #2f4f2f; }
+            body.sql-helper-theme-soft .sql-export-danger-card { background: #fffaf0 !important; border-color: #f0c36d !important; }
             body.sql-helper-theme-soft .sql-helper-btn,
             body.sql-helper-theme-soft .sql-card-actions button,
             body.sql-helper-theme-soft .sql-card-header-actions button,
@@ -2792,6 +2948,7 @@
             body.sql-helper-theme-dark .sql-card,
             body.sql-helper-theme-dark .sql-settings-section,
             body.sql-helper-theme-dark #sql-helper-export-sections > div,
+            body.sql-helper-theme-dark .sql-export-intro,
             body.sql-helper-theme-dark #sql-helper-comment-modal,
             body.sql-helper-theme-dark #sql-helper-export-modal,
             body.sql-helper-theme-dark #sql-helper-tags-modal,
@@ -2829,6 +2986,17 @@
             body.sql-helper-theme-dark .sql-settings-label span,
             body.sql-helper-theme-dark #sql-helper-footer,
             body.sql-helper-theme-dark .sql-helper-export-caption { color: #94a3b8; }
+            body.sql-helper-theme-dark .sql-export-card-title,
+            body.sql-helper-theme-dark .sql-helper-export-caption strong,
+            body.sql-helper-theme-dark .sql-export-intro strong { color: #dbeafe; }
+            body.sql-helper-theme-dark .sql-export-card-desc,
+            body.sql-helper-theme-dark .sql-export-field-title,
+            body.sql-helper-theme-dark .sql-export-intro { color: #94a3b8; }
+            body.sql-helper-theme-dark .sql-export-action-row { border-top-color: rgba(148,163,184,.18); }
+            body.sql-helper-theme-dark .sql-helper-import-mode { background: #020617; border-color: #334155; color: #e5e7eb; }
+            body.sql-helper-theme-dark .sql-helper-import-input { background: #020617; border-color: #475569; color: #e5e7eb; }
+            body.sql-helper-theme-dark .sql-export-danger-card { background: #1f1407 !important; border-color: #92400e !important; }
+            body.sql-helper-theme-dark .sql-export-danger-card .sql-export-card-title { color: #fed7aa; }
             body.sql-helper-theme-dark .sql-storage-status { background: #020617; border-color: #334155; color: #94a3b8; }
             body.sql-helper-theme-dark .sql-storage-grid strong { color: #e5e7eb; }
             body.sql-helper-theme-dark .sql-storage-note { color: #94a3b8; }
@@ -2859,6 +3027,7 @@
             body.sql-helper-theme-contrast .sql-card,
             body.sql-helper-theme-contrast .sql-settings-section,
             body.sql-helper-theme-contrast #sql-helper-export-sections > div,
+            body.sql-helper-theme-contrast .sql-export-intro,
             body.sql-helper-theme-contrast #sql-helper-comment-modal,
             body.sql-helper-theme-contrast #sql-helper-export-modal,
             body.sql-helper-theme-contrast #sql-helper-tags-modal,
@@ -2882,9 +3051,19 @@
             body.sql-helper-theme-contrast #sql-helper-toggle-btn { border-color: #111827; color: #111827; background: #fff; box-shadow: none; }
             body.sql-helper-theme-contrast #sql-helper-header-title,
             body.sql-helper-theme-contrast .sql-settings-section-title,
+            body.sql-helper-theme-contrast .sql-export-card-title,
+            body.sql-helper-theme-contrast .sql-helper-export-caption strong,
+            body.sql-helper-theme-contrast .sql-export-intro strong,
             body.sql-helper-theme-contrast .sql-card-name,
             body.sql-helper-theme-contrast .sql-settings-label strong,
             body.sql-helper-theme-contrast .sql-card-query pre { color: #111827; }
+            body.sql-helper-theme-contrast .sql-export-card-desc,
+            body.sql-helper-theme-contrast .sql-helper-export-caption,
+            body.sql-helper-theme-contrast .sql-export-field-title,
+            body.sql-helper-theme-contrast .sql-export-intro { color: #111827; }
+            body.sql-helper-theme-contrast .sql-export-action-row,
+            body.sql-helper-theme-contrast .sql-helper-import-mode,
+            body.sql-helper-theme-contrast .sql-helper-import-input { border-color: #111827; background: #fff; color: #111827; }
             body.sql-helper-theme-contrast .sql-storage-status,
             body.sql-helper-theme-contrast .sql-storage-warning,
             body.sql-helper-theme-contrast .sql-helper-toast,
@@ -2902,6 +3081,11 @@
             @media(max-width:820px){
                 #sql-helper-settings-sections,
                 #sql-helper-export-sections { grid-template-columns: 1fr; }
+                #sql-helper-export-modal { width: min(560px,96vw); max-height: 92vh; }
+                .sql-export-action-row,
+                .sql-helper-import-file { grid-template-columns: 1fr; align-items: stretch; }
+                .sql-export-action-row .sql-helper-btn,
+                .sql-helper-import-file .sql-helper-btn { width: 100%; }
                 #sql-helper-comment-body { grid-template-columns: 1fr; }
                 #sql-helper-comment-editor { border-right: 0; border-bottom: 1px solid #d6e0eb; }
             }
@@ -3106,7 +3290,7 @@
 
         const header = document.createElement('div');
         header.id = 'sql-helper-export-header';
-        header.innerHTML = '<div>Exportar / Importar histórico</div>';
+        header.innerHTML = '<div><div>Exportar / Importar</div><span>Backup, restauração e manutenção do histórico.</span></div>';
 
         const closeBtn = document.createElement('button');
         closeBtn.className = 'sql-helper-comment-close';
@@ -3117,16 +3301,22 @@
 
         const body = document.createElement('div');
         body.id = 'sql-helper-export-body';
-        body.innerHTML = '<div>Use esta tela para exportar seu histórico ou importar de outro analista.</div>';
+        const intro = document.createElement('div');
+        intro.className = 'sql-export-intro';
+        intro.innerHTML = '<strong>Histórico SQL</strong><span>Exporte backups completos ou importe arquivos gerados por este painel. A exportação respeita filtros e busca ativos.</span>';
 
         const sections = document.createElement('div');
         sections.id = 'sql-helper-export-sections';
 
         const exportSection = document.createElement('div');
-        exportSection.innerHTML = '<div style="font-weight:600;">Exportar</div>';
+        exportSection.className = 'sql-export-card sql-export-card-primary';
+        exportSection.innerHTML = '<div class="sql-export-card-title">Exportar</div><div class="sql-export-card-desc">Gere uma cópia do histórico atual para backup, auditoria ou compartilhamento.</div>';
 
         const exportOptions = document.createElement('div');
         exportOptions.id = 'sql-helper-export-options';
+
+        const jsonOption = document.createElement('div');
+        jsonOption.className = 'sql-export-action-row';
 
         const btnJson = document.createElement('button');
         btnJson.className = 'sql-helper-btn';
@@ -3135,7 +3325,12 @@
 
         const jsonCaption = document.createElement('div');
         jsonCaption.className = 'sql-helper-export-caption';
-        jsonCaption.textContent = 'Ideal para backup e reimportação programática.';
+        jsonCaption.innerHTML = '<strong>JSON</strong><span>Melhor formato para backup e reimportação fiel.</span>';
+
+        jsonOption.append(btnJson, jsonCaption);
+
+        const csvOption = document.createElement('div');
+        csvOption.className = 'sql-export-action-row';
 
         const btnCsv = document.createElement('button');
         btnCsv.className = 'sql-helper-btn secondary';
@@ -3144,13 +3339,15 @@
 
         const csvCaption = document.createElement('div');
         csvCaption.className = 'sql-helper-export-caption';
-        csvCaption.textContent = 'Separador ";" – abre bem no Excel/Sheets.';
+        csvCaption.innerHTML = '<strong>CSV</strong><span>Formato tabular com separador ";", adequado para Excel/Sheets.</span>';
 
-        exportOptions.append(btnJson, jsonCaption, btnCsv, csvCaption);
+        csvOption.append(btnCsv, csvCaption);
+        exportOptions.append(jsonOption, csvOption);
         exportSection.appendChild(exportOptions);
 
         const importSection = document.createElement('div');
-        importSection.innerHTML = '<div style="font-weight:600;">Importar</div>';
+        importSection.className = 'sql-export-card';
+        importSection.innerHTML = '<div class="sql-export-card-title">Importar</div><div class="sql-export-card-desc">Restaure um backup ou mescle consultas de outro usuário sem perder seus metadados atuais.</div>';
 
         const importOptions = document.createElement('div');
         importOptions.id = 'sql-helper-import-options';
@@ -3160,7 +3357,7 @@
 
         const importMode = document.createElement('div');
         importMode.className = 'sql-helper-import-mode';
-        importMode.innerHTML = '<div>Modo de importação:</div>';
+        importMode.innerHTML = '<div class="sql-export-field-title">Modo de importação</div>';
 
         const mergeRadio = document.createElement('input');
         mergeRadio.type = 'radio';
@@ -3169,7 +3366,7 @@
         mergeRadio.checked = true;
 
         const mergeLabel = document.createElement('label');
-        mergeLabel.append(mergeRadio, document.createTextNode('Mesclar com histórico atual (mantém tudo).'));
+        mergeLabel.append(mergeRadio, document.createTextNode('Mesclar com histórico atual'));
 
         const replaceRadio = document.createElement('input');
         replaceRadio.type = 'radio';
@@ -3177,7 +3374,7 @@
         replaceRadio.value = 'replace';
 
         const replaceLabel = document.createElement('label');
-        replaceLabel.append(replaceRadio, document.createTextNode('Substituir histórico atual (cuidado!).'));
+        replaceLabel.append(replaceRadio, document.createTextNode('Substituir histórico atual'));
 
         importMode.append(mergeLabel, replaceLabel);
 
@@ -3187,6 +3384,7 @@
         const fileInput = document.createElement('input');
         fileInput.type = 'file';
         fileInput.accept = '.json,.csv,.txt';
+        fileInput.className = 'sql-helper-import-input';
 
         const importBtn = document.createElement('button');
         importBtn.className = 'sql-helper-btn';
@@ -3197,25 +3395,22 @@
 
         const importCaption = document.createElement('div');
         importCaption.className = 'sql-helper-export-caption';
-        importCaption.textContent = 'Aceita arquivos JSON/CSV gerados por este painel.';
+        importCaption.innerHTML = '<strong>Arquivo</strong><span>Aceita JSON, CSV ou TXT gerado pelo próprio Histórico SQL.</span>';
 
         importRow.append(importMode, fileRow, importCaption);
         importOptions.appendChild(importRow);
         importSection.appendChild(importOptions);
 
         const dangerSection = document.createElement('div');
-        dangerSection.style.borderTop = '1px solid #d6e0eb';
-        dangerSection.style.paddingTop = '10px';
+        dangerSection.className = 'sql-export-card sql-export-danger-card';
 
         const dangerTitle = document.createElement('div');
-        dangerTitle.style.fontWeight = '600';
-        dangerTitle.style.color = '#6b3d00';
+        dangerTitle.className = 'sql-export-card-title';
         dangerTitle.textContent = 'Zona de perigo';
 
         const clearBtn = document.createElement('button');
         clearBtn.className = 'sql-helper-btn danger';
         setIconButtonContent(clearBtn, 'Limpar todo o histórico', 'delete');
-        clearBtn.style.marginTop = '6px';
         clearBtn.addEventListener('click', () => {
             if (confirm('Apagar TODO o histórico de queries desta tela? Esta ação não pode ser desfeita.')) {
                 clearHistory();
@@ -3225,19 +3420,22 @@
 
         const dangerCaption = document.createElement('div');
         dangerCaption.className = 'sql-helper-export-caption';
-        dangerCaption.textContent = 'Remove permanentemente todas as queries salvas.';
-        dangerCaption.style.marginTop = '4px';
+        dangerCaption.innerHTML = '<strong>Atenção</strong><span>Remove permanentemente todas as queries salvas neste navegador.</span>';
 
-        dangerSection.append(dangerTitle, clearBtn, dangerCaption);
+        const dangerRow = document.createElement('div');
+        dangerRow.className = 'sql-export-action-row';
+        dangerRow.append(clearBtn, dangerCaption);
+
+        dangerSection.append(dangerTitle, dangerRow);
         sections.append(exportSection, importSection, dangerSection);
 
-        body.appendChild(sections);
+        body.append(intro, sections);
 
         const footer = document.createElement('div');
         footer.id = 'sql-helper-export-footer';
 
         const info = document.createElement('div');
-        info.textContent = 'Dica: filtros ativos também afetam a exportação.';
+        info.textContent = 'Dica: revise filtros e busca antes de exportar.';
 
         const footerCloseBtn = document.createElement('button');
         footerCloseBtn.className = 'sql-helper-btn secondary';
