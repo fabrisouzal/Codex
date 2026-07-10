@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Editor de Query
 // @namespace    http://tampermonkey.net/
-// @version      2026-07-10.01
+// @version      2026-07-10.02
 // @description  Editor SQL Pro com CodeMirror, ribbon, snippets, configuracoes, import/export SQL e execucao parcial.
 // @compatible   edge
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -57,6 +57,7 @@
     execWarn:      "tm:execTimer:warnSeconds_v1:"       + KEY_BASE,
     execFallback:  "tm:execTimer:fallbackSeconds_v1:"   + KEY_BASE,
     execCollapse:  "tm:execTimer:autoCollapse_v1:"      + KEY_BASE,
+    execHistory:   "tm:execTimer:history_v1:"           + KEY_BASE,
     execToastPos:  "tm:execToast:position_v1:"          + KEY_BASE,
     execToastTheme:"tm:execToast:theme_v1:"             + KEY_BASE,
     execToastSize: "tm:execToast:size_v1:"              + KEY_BASE,
@@ -159,9 +160,11 @@
     execBox:            null,
     execMain:           null,
     execDetail:         null,
+    execCloseBtn:       null,
     execProgressEl:     null,
     execProgressBar:    null,
     execIntervalId:     null,
+    execHideTimer:      null,
     execFallbackTimer:   null,
     // Lint
     lintMarkers:        [],
@@ -364,6 +367,48 @@
   function getAutoCollapseQueryAfterExec() {
     var raw = storage.get(KEYS.execCollapse);
     return raw === null ? CFG.autoCollapseQueryAfterExecDefault : raw === "on";
+  }
+
+  function getExecHistory() {
+    var items = storage.getJson(KEYS.execHistory);
+    if (!Array.isArray(items)) return [];
+    return items
+      .map(function (n) { return Number(n); })
+      .filter(function (n) { return isFinite(n) && n >= 0; })
+      .slice(0, 8);
+  }
+
+  function saveExecHistory(items) {
+    storage.setJson(KEYS.execHistory, items.slice(0, 8));
+  }
+
+  function recordExecDuration(seconds) {
+    var items = getExecHistory();
+    items.unshift(Number(seconds) || 0);
+    saveExecHistory(items);
+    return items;
+  }
+
+  function getExecHistorySummary(items) {
+    items = Array.isArray(items) ? items : getExecHistory();
+    if (!items.length) return "";
+    var recent = items.slice(0, 5).map(function (n) { return n.toFixed(2) + "s"; }).join(", ");
+    var total = items.reduce(function (sum, n) { return sum + n; }, 0);
+    var avg = total / items.length;
+    return "Ultimos tempos: " + recent + " | Media: " + avg.toFixed(2) + "s";
+  }
+
+  function getExecTimeClass(seconds) {
+    var warnAfter = getExecWarnThresholdSeconds();
+    if (seconds >= warnAfter) return "sql-exec-box-warn";
+    if (seconds >= Math.max(1, warnAfter / 2)) return "sql-exec-box-slow";
+    return "sql-exec-box-ok";
+  }
+
+  function applyExecTimeClass(seconds) {
+    if (!state.execBox) return;
+    state.execBox.classList.remove("sql-exec-box-ok", "sql-exec-box-slow", "sql-exec-box-warn", "sql-exec-box-persistent");
+    state.execBox.classList.add(getExecTimeClass(seconds));
   }
 
   function getStoredBool(key, fallback) {
@@ -1777,11 +1822,18 @@
       ".sql-exec-box.sql-toast-office{background:linear-gradient(#f7fbff,#eaf1f9);color:#20385f;border:1px solid #b7c5d8;}",
       ".sql-exec-box.sql-size-compact{font-size:11px;min-width:190px;max-width:300px;padding:6px 9px;border-radius:8px;}",
       ".sql-exec-box.sql-size-large{font-size:13px;min-width:300px;max-width:460px;padding:11px 14px;border-radius:12px;}",
+      ".sql-exec-box-ok{border-left:4px solid #107c10;}",
+      ".sql-exec-box-slow{background:rgba(130,88,0,.96);border-left:4px solid #f2c94c;}",
+      ".sql-exec-box-slow.sql-toast-light{background:#fff9e8;border-color:#e0b341;color:#6b3d00;}",
+      ".sql-exec-box-slow.sql-toast-office{background:linear-gradient(#fffaf0,#fff1c9);border-color:#e0b341;color:#6b3d00;}",
       ".sql-exec-box-warn{background:rgba(160,90,0,.95);}",
       ".sql-exec-box-warn.sql-toast-light{background:#fff7e6;border-color:#d99a31;color:#6b3d00;}",
       ".sql-exec-box-warn.sql-toast-office{background:linear-gradient(#fff7e6,#ffe9bf);border-color:#d99a31;color:#6b3d00;}",
+      ".sql-exec-box-persistent{box-shadow:0 0 0 2px rgba(217,154,49,.22),0 6px 18px rgba(0,0,0,.35);}",
       ".sql-exec-main{font-weight:700;margin-bottom:4px;}",
       ".sql-exec-detail{font-size:11px;opacity:.9;margin-bottom:4px;line-height:1.35;}",
+      ".sql-exec-close{position:absolute;top:5px;right:7px;border:0;background:transparent;color:inherit;font-size:16px;line-height:16px;cursor:pointer;opacity:.72;padding:0;}",
+      ".sql-exec-close:hover{opacity:1;}",
       ".sql-exec-box.sql-hide-detail .sql-exec-detail{display:none;}",
       ".sql-exec-box.sql-hide-progress .sql-exec-progress{display:none;}",
       ".sql-exec-progress{height:3px;background:rgba(255,255,255,.18);overflow:hidden;border-radius:2px;}",
@@ -2670,6 +2722,8 @@
                " | Ln " + (cursor.line + 1) + ", Col " + cursor.ch;
     if (state.lastExecElapsed   != null) text += " | Última execução: "         + state.lastExecElapsed.toFixed(3)   + "s";
     if (state.lastExecInterval  != null) text += " | Desde o último Executar: " + state.lastExecInterval.toFixed(3)  + "s";
+    var historySummary = getExecHistorySummary();
+    if (historySummary) text += " | " + historySummary;
     state.editorStatsEl.textContent = text;
 
     if (!state.lintInfoEl) return;
@@ -3280,6 +3334,16 @@
     state.execDetail = document.createElement("div");
     state.execDetail.className = "sql-exec-detail";
 
+    state.execCloseBtn = document.createElement("button");
+    state.execCloseBtn.type = "button";
+    state.execCloseBtn.className = "sql-exec-close";
+    state.execCloseBtn.textContent = "x";
+    state.execCloseBtn.title = "Fechar aviso de execucao";
+    state.execCloseBtn.addEventListener("click", function () {
+      if (state.execHideTimer) { clearTimeout(state.execHideTimer); state.execHideTimer = null; }
+      if (state.execBox) state.execBox.style.display = "none";
+    }, true);
+
     var progress = document.createElement("div");
     progress.className = "sql-exec-progress";
     state.execProgressEl = progress;
@@ -3288,6 +3352,7 @@
     state.execProgressBar.className = "sql-exec-progress-bar";
 
     progress.appendChild(state.execProgressBar);
+    state.execBox.appendChild(state.execCloseBtn);
     state.execBox.appendChild(state.execMain);
     state.execBox.appendChild(state.execDetail);
     state.execBox.appendChild(progress);
@@ -3298,10 +3363,11 @@
   function startExecBox() {
     if (!state.execBox) createExecBox();
     applyExecToastOptions();
+    if (state.execHideTimer) { clearTimeout(state.execHideTimer); state.execHideTimer = null; }
     state.execBox.style.display = "block";
-    state.execBox.classList.remove("sql-exec-box-warn");
+    applyExecTimeClass(0);
     state.execMain.textContent = "Executando... 0.000s";
-    state.execDetail.textContent = "";
+    state.execDetail.textContent = getExecHistorySummary();
     state.execProgressBar.style.animationPlayState = "running";
     state.execProgressBar.style.width = "40%";
 
@@ -3311,7 +3377,11 @@
       var elapsed = (performance.now() - state.lastExecStart) / 1000;
       var warnAfter = getExecWarnThresholdSeconds();
       state.execMain.textContent = "Executando... " + elapsed.toFixed(3) + "s";
-      if (elapsed >= warnAfter) state.execBox.classList.add("sql-exec-box-warn");
+      applyExecTimeClass(elapsed);
+      if (elapsed >= warnAfter) {
+        state.execBox.classList.add("sql-exec-box-persistent");
+        state.execDetail.textContent = "Execucao longa: acima de " + warnAfter + "s" + (getExecHistorySummary() ? " | " + getExecHistorySummary() : "");
+      }
     }, 100);
   }
 
@@ -3319,30 +3389,35 @@
     if (!state.execBox) return;
     if (state.execIntervalId) { clearInterval(state.execIntervalId); state.execIntervalId = null; }
 
-    state.execMain.textContent = "Execução concluída em " + elapsedSeconds.toFixed(3) + "s";
+    state.execMain.textContent = "Execucao concluida em " + elapsedSeconds.toFixed(3) + "s";
 
     var detailParts = [];
     var warnAfter = getExecWarnThresholdSeconds();
-    if (state.lastExecInterval != null) detailParts.push("Tempo desde o último Executar: " + state.lastExecInterval.toFixed(3) + "s");
+    var history = recordExecDuration(elapsedSeconds);
+    if (state.lastExecInterval != null) detailParts.push("Tempo desde o ultimo Executar: " + state.lastExecInterval.toFixed(3) + "s");
+    applyExecTimeClass(elapsedSeconds);
     if (elapsedSeconds >= warnAfter) {
-      state.execBox.classList.add("sql-exec-box-warn");
-      detailParts.push("Atenção: execução > " + warnAfter + "s");
+      detailParts.push("Execucao longa: > " + warnAfter + "s");
+      state.execBox.classList.add("sql-exec-box-persistent");
     }
+    detailParts.push(getExecHistorySummary(history));
     state.execDetail.textContent = detailParts.join(" | ");
 
     state.execProgressBar.style.animationPlayState = "paused";
     state.execProgressBar.style.transform = "translateX(0)";
     state.execProgressBar.style.width = "100%";
 
+    if (elapsedSeconds >= warnAfter) return;
     var hideSeconds = getExecToastHideSeconds();
     if (hideSeconds === 0) return;
     var hideDelay = hideSeconds * 1000;
-    setTimeout(function () {
+    state.execHideTimer = setTimeout(function () {
       if (!state.execBox) return;
       state.execBox.style.display = "none";
       state.execProgressBar.style.animationPlayState = "running";
       state.execProgressBar.style.width = "40%";
       state.execProgressBar.style.transform = "";
+      state.execHideTimer = null;
     }, hideDelay);
   }
 

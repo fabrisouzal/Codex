@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Editor de Query.user.js`
 
 Arquivo publicado: `tampermonkey/editor-de-query.user.js`
 
-Versao do script: `2026-07-10.01`
+Versao do script: `2026-07-10.02`
 
-Versao do documento: `2026-07-10.01`
+Versao do documento: `2026-07-10.02`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/editor-de-query.user.js`
@@ -142,6 +142,9 @@ Comportamentos existentes:
 - Tempo de alerta configuravel.
 - Timeout de restauracao configuravel para execucao parcial.
 - Integracao com evento `endRequest` do ASP.NET AJAX para detectar conclusao.
+- Contador em tempo real no toast durante a execucao (novo).
+- Classificacao visual por faixas de duracao: normal, intermediaria e longa (novo).
+- Historico local das ultimas duracoes, com resumo e media na area de estatisticas e no toast (novo).
 
 ### 7.7 Toast de Execucao
 
@@ -155,6 +158,7 @@ Opcoes existentes:
 - Ocultar automaticamente apos conclusao.
 - Mostrar ou ocultar detalhes.
 - Mostrar ou ocultar barra de progresso.
+- Manter o toast aberto em execucoes longas ate o usuario fechar manualmente (novo).
 
 ### 7.8 Accordion do Editor
 
