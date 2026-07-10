@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Editor de Query.user.js`
 
 Arquivo publicado: `tampermonkey/editor-de-query.user.js`
 
-Versao do script: `2026-07-09.02`
+Versao do script: `2026-07-10.01`
 
-Versao do documento: `2026-07-09.02`
+Versao do documento: `2026-07-10.01`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/editor-de-query.user.js`
@@ -187,6 +187,7 @@ Comportamentos existentes:
 - Preservacao do texto, cursor, selecao e posicao de rolagem durante a execucao.
 - Manutencao do modal dentro do formulario ASP.NET para que o campo SQL participe do `POST`.
 - Recuperacao temporaria da query por `sessionStorage` apos recarga completa da pagina.
+- Prioridade visual elevada para o modo janela, mantendo o Editor maximizado acima de paineis de outros scripts, como Historico SQL (novo).
 
 ### 7.10 Painel de Configuracoes
 

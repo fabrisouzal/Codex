@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Editor de Query
 // @namespace    http://tampermonkey.net/
-// @version      2026-07-09.02
+// @version      2026-07-10.01
 // @description  Editor SQL Pro com CodeMirror, ribbon, snippets, configuracoes, import/export SQL e execucao parcial.
 // @compatible   edge
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -1714,6 +1714,7 @@
       ".tm-query-acc-bd.tm-hidden{display:none !important;}",
       /* Modal */
       ".tm-modal-ov{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:999998;display:flex;align-items:center;justify-content:center;}",
+      ".tm-query-modal-ov{z-index:2147483000 !important;}",
       ".tm-modal-win{background:#fff;border-radius:14px;box-shadow:0 10px 40px rgba(0,0,0,.35);overflow:hidden;display:flex;flex-direction:column;}",
       ".tm-modal-hd{padding:10px 12px;background:#f3f3f3;display:flex;align-items:center;justify-content:space-between;gap:10px;}",
       ".tm-modal-hd .left{display:flex;align-items:center;gap:10px;}",
@@ -1883,7 +1884,7 @@
     if (state.modalOverlayEl) return;
 
     state.modalOverlayEl = document.createElement("div");
-    state.modalOverlayEl.className = "tm-modal-ov";
+    state.modalOverlayEl.className = "tm-modal-ov tm-query-modal-ov";
     state.modalOverlayEl.style.display = "none";
 
     state.modalWindowEl = document.createElement("div");
