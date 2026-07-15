@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Editor de Query.user.js`
 
 Arquivo publicado: `tampermonkey/editor-de-query.user.js`
 
-Versao do script: `2026-07-15.01`
+Versao do script: `2026-07-15.02`
 
-Versao do documento: `2026-07-15.01`
+Versao do documento: `2026-07-15.02`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/editor-de-query.user.js`
@@ -318,14 +318,17 @@ Funcionalidades existentes:
 
 ### 7.17 Autocomplete por Catalogo JSON (novo)
 
-O editor possui um MVP de autocomplete baseado em catalogo JSON importavel, sem conexao direta do navegador ao banco.
+O editor possui um MVP de autocomplete baseado em catalogo JSON embutido no proprio userscript e tambem importavel, sem conexao direta do navegador ao banco.
 
 Funcionalidades existentes:
 
 - Card `Autocomplete` no painel de configuracoes (novo).
+- Catalogo padrao ATTUS embutido no codigo do userscript, carregado automaticamente na primeira instalacao (novo).
+- Catalogo padrao com 23 schemas, 646 tabelas e 6.124 colunas (novo).
 - Importacao de arquivo `.json` com schemas, tabelas e colunas (novo).
 - Exportacao do catalogo normalizado carregado (novo).
 - Acao para limpar o catalogo importado (novo).
+- Acao para restaurar o catalogo padrao embutido (novo).
 - Resumo do catalogo carregado com total de tabelas e colunas (novo).
 - Atalho `Ctrl+Espaco` para abrir sugestoes no editor (novo).
 - Sugestoes de palavras-chave SQL quando nao houver catalogo ou contexto de tabela (novo).
@@ -356,6 +359,7 @@ Estados persistidos:
 - Snippets personalizados.
 - Favoritos de snippets.
 - Catalogo JSON de schemas, tabelas e colunas para autocomplete (novo).
+- Versao do catalogo padrao embutido para controlar carga inicial e restauracao (novo).
 
 ## 9. Requisitos Nao Funcionais
 
