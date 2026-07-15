@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Editor de Query.user.js`
 
 Arquivo publicado: `tampermonkey/editor-de-query.user.js`
 
-Versao do script: `2026-07-10.02`
+Versao do script: `2026-07-15.01`
 
-Versao do documento: `2026-07-10.02`
+Versao do documento: `2026-07-15.01`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/editor-de-query.user.js`
@@ -316,6 +316,25 @@ Funcionalidades existentes:
 - Campo de categoria em formato dropdown no cadastro e na edicao de snippets (novo).
 - Exportacao e importacao em JSON.
 
+### 7.17 Autocomplete por Catalogo JSON (novo)
+
+O editor possui um MVP de autocomplete baseado em catalogo JSON importavel, sem conexao direta do navegador ao banco.
+
+Funcionalidades existentes:
+
+- Card `Autocomplete` no painel de configuracoes (novo).
+- Importacao de arquivo `.json` com schemas, tabelas e colunas (novo).
+- Exportacao do catalogo normalizado carregado (novo).
+- Acao para limpar o catalogo importado (novo).
+- Resumo do catalogo carregado com total de tabelas e colunas (novo).
+- Atalho `Ctrl+Espaco` para abrir sugestoes no editor (novo).
+- Sugestoes de palavras-chave SQL quando nao houver catalogo ou contexto de tabela (novo).
+- Sugestoes de tabelas pelo nome completo `SCHEMA.TABELA` (novo).
+- Sugestoes de tabelas ao digitar `SCHEMA.` (novo).
+- Sugestoes de colunas ao digitar `alias.` ou `tabela.` quando a tabela existir no catalogo (novo).
+- Leitura simples de aliases definidos em clausulas `FROM` e `JOIN` (novo).
+- Normalizacao de formatos flexiveis de JSON, incluindo `{ "schemas": ... }`, `{ "tables": ... }` e listas diretas (novo).
+
 ## 8. Persistencia e Estado
 
 O script usa `localStorage` com chaves separadas por host, caminho e query string.
@@ -336,6 +355,7 @@ Estados persistidos:
 - Versao de schema de configuracoes.
 - Snippets personalizados.
 - Favoritos de snippets.
+- Catalogo JSON de schemas, tabelas e colunas para autocomplete (novo).
 
 ## 9. Requisitos Nao Funcionais
 
@@ -358,6 +378,7 @@ Estados persistidos:
 - Substituir o script Historico SQL.
 - Implementar IA externa ou envio de queries para APIs.
 - Modificar diretamente o grid de resultado.
+- Usar diretamente arquivos `.jar` dentro do Tampermonkey ou abrir conexao JDBC pelo navegador.
 
 ## 11. Riscos e Cuidados
 

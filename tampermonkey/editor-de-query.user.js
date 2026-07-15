@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Editor de Query
 // @namespace    http://tampermonkey.net/
-// @version      2026-07-10.02
+// @version      2026-07-15.01
 // @description  Editor SQL Pro com CodeMirror, ribbon, snippets, configuracoes, import/export SQL e execucao parcial.
 // @compatible   edge
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -15,6 +15,7 @@
 // @require      https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/fold/foldgutter.min.js
 // @require      https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/fold/brace-fold.min.js
 // @require      https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/fold/comment-fold.min.js
+// @require      https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/hint/show-hint.min.js
 // @updateURL    https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/editor-de-query.user.js
 // @downloadURL  https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/editor-de-query.user.js
 // @grant        none
@@ -71,6 +72,7 @@
     snippetFavorites:"tm:queryEditor:snippetFavorites_v1:" + KEY_BASE,
     snippetCardSettings:"tm:queryEditor:snippetCardSettings_v1:" + KEY_BASE,
     snippetDefaultsVersion:"tm:queryEditor:snippetDefaultsVersion_v1:" + KEY_BASE,
+    schemaCatalog:"tm:queryEditor:schemaCatalog_v1:" + KEY_BASE,
     schemaVersion: "tm:queryEditor:schemaVersion_v1:"    + KEY_BASE
   };
 
@@ -143,6 +145,7 @@
     editorContainerEl:  null,
     editorStatsEl:      null,
     lintInfoEl:         null,
+    schemaCatalogInfoEl:null,
     toolbarEl:          null,
     ribbonThemeSelect:  null,
     ribbonWarnSelect:   null,
@@ -1706,6 +1709,265 @@
   }
 
   // ===================================================================
+  // AUTOCOMPLETE POR CATALOGO JSON
+  // ===================================================================
+  var SQL_HINT_KEYWORDS = [
+    "SELECT", "FROM", "WHERE", "JOIN", "LEFT JOIN", "INNER JOIN", "GROUP BY",
+    "ORDER BY", "HAVING", "INSERT", "UPDATE", "DELETE", "AND", "OR", "IN",
+    "EXISTS", "BETWEEN", "LIKE", "IS NULL", "IS NOT NULL", "COUNT", "SUM",
+    "MAX", "MIN", "AVG", "DISTINCT"
+  ];
+
+  function normalizeSqlName(value) {
+    return String(value || "").replace(/^["'`\[]|["'`\]]$/g, "").trim();
+  }
+
+  function upperSqlName(value) {
+    return normalizeSqlName(value).toUpperCase();
+  }
+
+  function normalizeColumnList(value) {
+    if (!value) return [];
+    if (Array.isArray(value)) {
+      return value.map(function (item) {
+        return normalizeSqlName(typeof item === "string" ? item : (item.name || item.column || item.columnName || item.nome));
+      }).filter(Boolean);
+    }
+    if (typeof value === "object") return Object.keys(value).map(normalizeSqlName).filter(Boolean);
+    return [];
+  }
+
+  function pushCatalogTable(out, schema, name, columns) {
+    schema = normalizeSqlName(schema);
+    name = normalizeSqlName(name);
+    if (!name) return;
+    var cols = normalizeColumnList(columns);
+    out.push({ schema: schema, name: name, fullName: schema ? schema + "." + name : name, columns: cols });
+  }
+
+  function normalizeSchemaCatalog(input) {
+    var source = input;
+    var tables = [];
+    if (!source || typeof source !== "object") throw new Error("JSON do catalogo invalido.");
+    if (Array.isArray(source)) source = { tables: source };
+
+    if (source.schemas && typeof source.schemas === "object") {
+      Object.keys(source.schemas).forEach(function (schemaName) {
+        var schemaValue = source.schemas[schemaName];
+        if (Array.isArray(schemaValue)) {
+          schemaValue.forEach(function (table) {
+            pushCatalogTable(tables, schemaName, table.name || table.table || table.tableName || table.nome, table.columns || table.colunas);
+          });
+          return;
+        }
+        if (schemaValue && typeof schemaValue === "object") {
+          Object.keys(schemaValue).forEach(function (tableName) {
+            pushCatalogTable(tables, schemaName, tableName, schemaValue[tableName]);
+          });
+        }
+      });
+    }
+
+    if (Array.isArray(source.tables)) {
+      source.tables.forEach(function (table) {
+        if (typeof table === "string") {
+          var parts = table.split(".");
+          pushCatalogTable(tables, parts.length > 1 ? parts[0] : "", parts.length > 1 ? parts.slice(1).join(".") : table, []);
+          return;
+        }
+        if (!table || typeof table !== "object") return;
+        pushCatalogTable(
+          tables,
+          table.schema || table.owner || table.esquema,
+          table.name || table.table || table.tableName || table.nome,
+          table.columns || table.colunas || table.fields || table.campos
+        );
+      });
+    }
+
+    var seen = {};
+    tables = tables.filter(function (table) {
+      var key = upperSqlName(table.fullName);
+      if (!key || seen[key]) return false;
+      seen[key] = true;
+      var columnSeen = {};
+      table.columns = table.columns.filter(function (column) {
+        var columnKey = upperSqlName(column);
+        if (!columnKey || columnSeen[columnKey]) return false;
+        columnSeen[columnKey] = true;
+        return true;
+      });
+      return true;
+    }).sort(function (a, b) {
+      return upperSqlName(a.fullName).localeCompare(upperSqlName(b.fullName));
+    });
+
+    if (!tables.length) throw new Error("Nenhuma tabela encontrada no JSON.");
+    return { version: 1, importedAt: new Date().toISOString(), tables: tables };
+  }
+
+  function getSchemaCatalog() {
+    var catalog = storage.getJson(KEYS.schemaCatalog);
+    if (!catalog || !Array.isArray(catalog.tables)) return null;
+    return catalog;
+  }
+
+  function saveSchemaCatalog(catalog) {
+    storage.setJson(KEYS.schemaCatalog, catalog);
+    syncSchemaCatalogInfo();
+  }
+
+  function clearSchemaCatalog() {
+    storage.remove(KEYS.schemaCatalog);
+    syncSchemaCatalogInfo();
+  }
+
+  function getSchemaCatalogSummary() {
+    var catalog = getSchemaCatalog();
+    if (!catalog) return "Nenhum catalogo carregado";
+    var columns = catalog.tables.reduce(function (total, table) {
+      return total + (Array.isArray(table.columns) ? table.columns.length : 0);
+    }, 0);
+    return catalog.tables.length + " tabelas, " + columns + " colunas";
+  }
+
+  function syncSchemaCatalogInfo() {
+    if (state.schemaCatalogInfoEl) state.schemaCatalogInfoEl.textContent = getSchemaCatalogSummary();
+  }
+
+  function importSchemaCatalogFile(file) {
+    if (!file) return;
+    if (!/\.json$/i.test(file.name || "")) return alert("Selecione um arquivo .json.");
+    var reader = new FileReader();
+    reader.onload = function () {
+      try {
+        var catalog = normalizeSchemaCatalog(JSON.parse(String(reader.result || "{}")));
+        saveSchemaCatalog(catalog);
+        showToast("Catalogo importado: " + getSchemaCatalogSummary());
+      } catch (exception) {
+        alert(exception.message || "JSON de catalogo invalido.");
+      }
+    };
+    reader.onerror = function () { alert("Nao foi possivel ler o catalogo JSON."); };
+    reader.readAsText(file, "UTF-8");
+  }
+
+  function exportSchemaCatalog() {
+    var catalog = getSchemaCatalog();
+    if (!catalog) return alert("Nenhum catalogo carregado para exportar.");
+    downloadBlob("editor-query-catalogo-sql.json", new Blob([JSON.stringify(catalog, null, 2)], { type: "application/json;charset=utf-8" }));
+  }
+
+  function createSchemaCatalogControls() {
+    var wrap = document.createElement("div");
+    wrap.className = "tm-schema-tools";
+    var fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = ".json,application/json";
+    fileInput.style.display = "none";
+    fileInput.addEventListener("change", function () {
+      importSchemaCatalogFile(fileInput.files && fileInput.files[0]);
+      fileInput.value = "";
+    }, true);
+
+    function btn(label, handler, className) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      if (className) button.className = className;
+      button.addEventListener("click", handler, true);
+      return button;
+    }
+
+    wrap.appendChild(fileInput);
+    wrap.appendChild(btn("Importar JSON", function () { fileInput.click(); }));
+    wrap.appendChild(btn("Exportar", exportSchemaCatalog));
+    wrap.appendChild(btn("Limpar", function () {
+      if (confirm("Remover o catalogo de autocomplete importado?")) {
+        clearSchemaCatalog();
+        showToast("Catalogo removido");
+      }
+    }, "danger"));
+    return wrap;
+  }
+
+  function buildSqlAliasMap(sql) {
+    var aliases = {};
+    var keyword = /^(where|join|left|right|inner|outer|full|cross|on|group|order|having|union)$/i;
+    String(sql || "").replace(/\b(from|join)\s+([A-Za-z0-9_$#"]+(?:\.[A-Za-z0-9_$#"]+)?)(?:\s+(?:as\s+)?([A-Za-z0-9_$#"]+))?/gi, function (_, clause, tableName, alias) {
+      tableName = normalizeSqlName(tableName);
+      alias = normalizeSqlName(alias);
+      if (tableName) aliases[upperSqlName(tableName)] = tableName;
+      if (alias && !keyword.test(alias)) aliases[upperSqlName(alias)] = tableName;
+      return _;
+    });
+    return aliases;
+  }
+
+  function findCatalogTable(catalog, name, aliases) {
+    var target = upperSqlName((aliases && aliases[upperSqlName(name)]) || name);
+    if (!target) return null;
+    return catalog.tables.find(function (table) {
+      return upperSqlName(table.fullName) === target || upperSqlName(table.name) === target;
+    }) || null;
+  }
+
+  function showSqlAutocomplete(cm) {
+    if (!cm || typeof CodeMirror === "undefined" || !CodeMirror.showHint) {
+      showToast("Autocomplete ainda nao carregou");
+      return typeof CodeMirror !== "undefined" ? CodeMirror.Pass : null;
+    }
+
+    var catalog = getSchemaCatalog();
+    var cursor = cm.getCursor();
+    var line = cm.getLine(cursor.line) || "";
+    var before = line.slice(0, cursor.ch);
+    var dotMatch = before.match(/([A-Za-z0-9_$#"]+(?:\.[A-Za-z0-9_$#"]+)?)\.([A-Za-z0-9_$#"]*)$/);
+    var token = cm.getTokenAt(cursor);
+    var tokenText = (token && /^[A-Za-z0-9_$#]+$/.test(token.string || "")) ? token.string : "";
+    var from = CodeMirror.Pos(cursor.line, dotMatch ? cursor.ch - dotMatch[2].length : (token ? token.start : cursor.ch));
+    var to = CodeMirror.Pos(cursor.line, cursor.ch);
+    var list = [];
+
+    if (catalog && dotMatch) {
+      var left = dotMatch[1];
+      var prefix = upperSqlName(dotMatch[2]);
+      var aliases = buildSqlAliasMap(cm.getValue());
+      var table = findCatalogTable(catalog, left, aliases);
+      if (table) {
+        list = table.columns.filter(function (column) {
+          return !prefix || upperSqlName(column).indexOf(prefix) === 0;
+        }).map(function (column) {
+          return { text: column, displayText: column, className: "tm-hint-column" };
+        });
+      } else {
+        list = catalog.tables.filter(function (item) {
+          return upperSqlName(item.schema) === upperSqlName(left) && (!prefix || upperSqlName(item.name).indexOf(prefix) === 0);
+        }).map(function (item) {
+          return { text: item.name, displayText: item.name, className: "tm-hint-table" };
+        });
+      }
+    } else {
+      var prefixText = upperSqlName(tokenText);
+      SQL_HINT_KEYWORDS.forEach(function (word) {
+        if (!prefixText || word.indexOf(prefixText) === 0) list.push({ text: word, displayText: word, className: "tm-hint-keyword" });
+      });
+      if (catalog) {
+        catalog.tables.forEach(function (table) {
+          if (!prefixText || upperSqlName(table.fullName).indexOf(prefixText) === 0 || upperSqlName(table.name).indexOf(prefixText) === 0) {
+            list.push({ text: table.fullName, displayText: table.fullName, className: "tm-hint-table" });
+          }
+        });
+      }
+    }
+
+    CodeMirror.showHint(cm, function () {
+      return { list: list.slice(0, 80), from: from, to: to };
+    }, { completeSingle: false });
+    return null;
+  }
+
+  // ===================================================================
   // CSS
   // ===================================================================
   function injectCSSOnce() {
@@ -1801,6 +2063,12 @@
       ".tm-setting-row select,.tm-setting-row input[type='text']{width:100%;min-width:145px;font-size:12px;padding:4px 7px;border-radius:6px;border:1px solid #b7c5d8;background:#fff;color:#20385f;box-sizing:border-box;}",
       ".tm-setting-row input[type='checkbox']{width:16px;height:16px;}",
       ".tm-setting-row.tm-toggle{grid-template-columns:1fr 22px;}",
+      ".tm-schema-tools{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;}",
+      ".tm-schema-tools button{font-size:12px;padding:4px 9px;border-radius:6px;border:1px solid #b7c5d8;background:#fff;color:#20385f;cursor:pointer;}",
+      ".tm-schema-tools button:hover{background:#f4f8ff;border-color:#8fb0d8;}",
+      ".tm-schema-tools button.danger{border-color:#d59a9a;color:#9f2020;background:#fff8f8;}",
+      ".CodeMirror-hints{z-index:2147483600!important;border:1px solid #b7c5d8!important;border-radius:6px!important;box-shadow:0 8px 24px rgba(15,23,42,.18)!important;font:12px Consolas,monospace!important;}",
+      ".CodeMirror-hint-active{background:#eaf3ff!important;color:#20385f!important;}",
       ".tm-toggle-grid{display:grid;grid-template-columns:repeat(3,minmax(160px,1fr));gap:2px 14px;}",
       ".tm-toggle-grid .tm-setting-row{margin:4px 0;}",
       ".tm-bar-groups{display:grid;grid-template-columns:repeat(2,minmax(260px,1fr));gap:10px;}",
@@ -2287,11 +2555,20 @@
       createSettingRow("Mostrar progresso", toastProgressCheck)
     ], "Aparência e persistência da caixa que acompanha a execução."));
 
+    state.schemaCatalogInfoEl = document.createElement("span");
+    state.schemaCatalogInfoEl.className = "tm-schema-summary";
+    syncSchemaCatalogInfo();
+
     body.appendChild(createSettingsCard("Editor", [
       createSettingRow("Tema", themeSelect),
       createSettingRow("Mostrar toolbar", toolbarCheck),
       createSettingRow("Lint SQL", lintCheck)
     ], "Preferências gerais do editor SQL."));
+
+    body.appendChild(createSettingsCard("Autocomplete", [
+      createSettingRow("Catalogo carregado", state.schemaCatalogInfoEl),
+      createSettingRow("Catalogo JSON", createSchemaCatalogControls())
+    ], "Importe um JSON com schemas, tabelas e colunas. Use Ctrl+Espaco no editor."));
 
     body.appendChild(createSettingsCard(
       "Barra",
@@ -3262,6 +3539,7 @@
       extraKeys: {
         "Ctrl-Enter": triggerExecuteButton,
         "Ctrl-S":     function (cm) { try { cm.save(); } catch (_) {} },
+        "Ctrl-Space": function (cm) { return showSqlAutocomplete(cm); },
         "Ctrl-Alt-S": function () { openSnippets(); },
         "Tab":        function (cm) { return snippetTab(cm, false); },
         "Shift-Tab":  function (cm) { return snippetTab(cm, true); }
@@ -3270,6 +3548,11 @@
 
     state.sqlEditor.on("change", updateStats);
     state.sqlEditor.on("cursorActivity", updateStats);
+    state.sqlEditor.on("inputRead", function (cm, change) {
+      if (change && change.text && change.text.length === 1 && change.text[0] === ".") {
+        setTimeout(function () { showSqlAutocomplete(cm); }, 0);
+      }
+    });
 
     if (execDraft) {
       try {
@@ -3529,6 +3812,7 @@
     function ensureBaseCss() {
       loadCssOnce("tm-cm-core-css", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/codemirror.min.css");
       loadCssOnce("tm-cm-fold-css", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/fold/foldgutter.min.css");
+      loadCssOnce("tm-cm-hint-css", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/hint/show-hint.min.css");
     }
 
     function loadCssOnce(id, href) {
@@ -3579,6 +3863,10 @@
     // No Chrome/Tampermonkey, os @require acima carregam o CodeMirror antes do userscript.
     // O carregamento dinâmico abaixo fica como fallback para outros gerenciadores.
     if (typeof CodeMirror !== "undefined") {
+      if (!CodeMirror.showHint) {
+        loadScriptOnce("tm-cm-showhint-js", "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/hint/show-hint.min.js", flushCallbacks);
+        return;
+      }
       flushCallbacks();
       return;
     }
@@ -3590,7 +3878,8 @@
       { id: "tm-cm-foldcode-js",      src: "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/fold/foldcode.min.js" },
       { id: "tm-cm-foldgutter-js",    src: "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/fold/foldgutter.min.js" },
       { id: "tm-cm-bracefold-js",     src: "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/fold/brace-fold.min.js" },
-      { id: "tm-cm-commentfold-js",   src: "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/fold/comment-fold.min.js" }
+      { id: "tm-cm-commentfold-js",   src: "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/fold/comment-fold.min.js" },
+      { id: "tm-cm-showhint-js",      src: "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.13/addon/hint/show-hint.min.js" }
     ], flushCallbacks);
   }
 
