@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Zendesk - Exportar Tickets para PDF pesquisável
+// @name         Zendesk - Extrator de Tickets
 // @namespace    https://attus-ai.zendesk.com/
-// @version      2026.07.16.05
+// @version      2026.07.16.06
 // @description  Exporta tickets de uma busca editável do Zendesk em PDFs pesquisáveis, gravados diretamente em uma pasta escolhida.
 // @author       ATTUS
 // @match        https://attus-ai.zendesk.com/agent/*
@@ -36,18 +36,20 @@
 
     GM_addStyle(`
         #attus-zdexp-open {
-            position: fixed; right: 18px; bottom: 20px; z-index: 2147483646;
-            border: 0; border-radius: 999px; padding: 11px 16px;
+            position: fixed; right: 76px; top: 7px; z-index: 2147483646;
+            border: 0; border-radius: 6px; padding: 9px 13px;
             background: #174ea6; color: #fff; font: 600 13px/1 Arial, sans-serif;
             box-shadow: 0 5px 18px rgba(0,0,0,.28); cursor: pointer;
         }
         #attus-zdexp-open:hover { background: #123d82; }
         #attus-zdexp-panel {
-            position: fixed; right: 18px; bottom: 68px; z-index: 2147483647;
-            width: min(430px, calc(100vw - 36px)); max-height: calc(100vh - 90px);
+            position: fixed; right: 18px; top: 50px; z-index: 2147483647;
+            width: 460px; height: min(650px, calc(100vh - 68px));
+            min-width: 330px; min-height: 300px;
+            max-width: calc(100vw - 36px); max-height: calc(100vh - 68px);
             overflow: auto; padding: 16px; border: 1px solid #cbd5e1; border-radius: 10px;
             background: #fff; color: #172b4d; font: 13px/1.45 Arial, sans-serif;
-            box-shadow: 0 12px 36px rgba(0,0,0,.32);
+            box-shadow: 0 12px 36px rgba(0,0,0,.32); resize: both; box-sizing: border-box;
         }
         #attus-zdexp-panel[hidden] { display: none !important; }
         #attus-zdexp-panel h2 { margin: 0 28px 6px 0; font-size: 17px; }
@@ -70,6 +72,8 @@
             border: 1px solid #aebdca; border-radius: 5px;
             font: 11px/1.4 Consolas, monospace;
         }
+        #attus-zdexp-ticket-list { min-height: 68px; }
+        #attus-zdexp-file { width: 100%; font-size: 11px; font-weight: 400; }
         #attus-zdexp-folder { margin-top: 2px; color: #334e68; font-size: 11px; overflow-wrap: anywhere; }
         .attus-zdexp-check { display: flex; align-items: center; gap: 7px; margin: 8px 0; }
         .attus-zdexp-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 11px; }
@@ -586,6 +590,90 @@
         return String(value || '').replace(/\s+/g, ' ').trim();
     }
 
+    function splitDelimitedLine(line, delimiter) {
+        const cells = [];
+        let value = '';
+        let quoted = false;
+        for (let index = 0; index < line.length; index += 1) {
+            const character = line[index];
+            if (character === '"') {
+                if (quoted && line[index + 1] === '"') {
+                    value += '"';
+                    index += 1;
+                } else {
+                    quoted = !quoted;
+                }
+            } else if (character === delimiter && !quoted) {
+                cells.push(value.trim());
+                value = '';
+            } else {
+                value += character;
+            }
+        }
+        cells.push(value.trim());
+        return cells;
+    }
+
+    function ticketIdFromValue(value) {
+        const text = String(value || '').trim();
+        const urlMatch = text.match(/\/(?:agent\/)?tickets?\/(\d+)/i);
+        const numeric = urlMatch?.[1] || text.replace(/^#/, '');
+        if (!/^\d+$/.test(numeric)) return null;
+        const id = Number(numeric);
+        return Number.isSafeInteger(id) && id > 0 ? id : null;
+    }
+
+    function parseTicketIds(value) {
+        const text = String(value || '').replace(/^\uFEFF/, '').trim();
+        if (!text) return [];
+        const ids = new Set();
+        const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+        const delimiters = [';', ',', '\t'];
+        const delimiter = delimiters
+            .map(item => ({ item, count: (lines[0]?.split(item).length || 1) - 1 }))
+            .sort((a, b) => b.count - a.count)[0];
+        const chosenDelimiter = delimiter?.count > 0 ? delimiter.item : null;
+        let headerIndex = -1;
+
+        if (chosenDelimiter && lines.length > 1) {
+            const headerNames = splitDelimitedLine(lines[0], chosenDelimiter).map(cell =>
+                cell.normalize('NFD')
+                    .replace(/[\u0300-\u036f]/g, '')
+                    .toLowerCase()
+                    .replace(/[^a-z0-9]+/g, '_')
+                    .replace(/^_+|_+$/g, '')
+            );
+            const acceptedHeaders = new Set([
+                'id', 'ticket', 'ticket_id', 'id_ticket', 'numero_ticket',
+                'nro_ticket', 'chamado', 'id_chamado'
+            ]);
+            headerIndex = headerNames.findIndex(name => acceptedHeaders.has(name));
+        }
+
+        if (headerIndex >= 0) {
+            for (const line of lines.slice(1)) {
+                const id = ticketIdFromValue(splitDelimitedLine(line, chosenDelimiter)[headerIndex]);
+                if (id) ids.add(id);
+            }
+        } else {
+            for (const line of lines) {
+                for (const match of line.matchAll(/\/(?:agent\/)?tickets?\/(\d+)/gi)) {
+                    const id = ticketIdFromValue(match[1]);
+                    if (id) ids.add(id);
+                }
+                for (const token of line.split(/[\s,;|\t]+/)) {
+                    const id = ticketIdFromValue(token);
+                    if (id) ids.add(id);
+                }
+            }
+        }
+        return [...ids];
+    }
+
+    function ticketListKey(ticketIds) {
+        return `ticket-list:${ticketIds.join(',')}`;
+    }
+
     function queryId(query) {
         let hash = 2166136261;
         for (const char of query) {
@@ -727,17 +815,17 @@
         };
     }
 
-    async function exportTicket(searchTicket, index, total, includePrivate, query, state, errorRows) {
+    async function exportTicket(searchTicket, index, total, includePrivate, sourceLabel, progressKey, state, errorRows) {
         log(`Preparando ticket #${searchTicket.id} (${index + 1}/${total})...`);
         try {
             const documentData = await loadTicketDocument(searchTicket, includePrivate);
             const filename = `${documentData.ticket.id}-${safeFilename(documentData.ticket.subject)}.pdf`;
-            const pdfBlob = await renderPdfBlob(documentData, query);
-            const row = manifestRow(documentData, filename, query);
+            const pdfBlob = await renderPdfBlob(documentData, sourceLabel);
+            const row = manifestRow(documentData, filename, sourceLabel);
 
             await saveBlobToDirectory(pdfBlob, filename);
             state.completed[String(documentData.ticket.id)] = row;
-            saveState(query, state);
+            saveState(progressKey, state);
             log(`PDF salvo: ${filename} (${index + 1}/${total}).`);
         } catch (error) {
             errorRows.push({
@@ -750,7 +838,7 @@
                 atualizado_em: searchTicket.updated_at || '',
                 comentarios: '',
                 url: `${BASE}/agent/tickets/${searchTicket.id}`,
-                query_origem: query,
+                query_origem: sourceLabel,
                 arquivo: '',
                 erro: error.message
             });
@@ -766,11 +854,21 @@
             return;
         }
         const query = normalizeQuery(document.querySelector('#attus-zdexp-query').value);
-        if (!query) {
-            log('ERRO: informe uma query do Zendesk.');
+        const ticketListText = document.querySelector('#attus-zdexp-ticket-list').value.trim();
+        const ticketIds = parseTicketIds(ticketListText);
+        if (ticketListText && !ticketIds.length) {
+            log('ERRO: a lista informada não contém IDs ou URLs de tickets válidos.');
             return;
         }
-        localStorage.setItem(QUERY_KEY, query);
+        if (!query && !ticketIds.length) {
+            log('ERRO: informe uma query ou uma lista de tickets.');
+            return;
+        }
+        if (query) localStorage.setItem(QUERY_KEY, query);
+        const progressKey = ticketIds.length ? ticketListKey(ticketIds) : query;
+        const sourceLabel = ticketIds.length
+            ? `Lista direta com ${ticketIds.length} ticket(s)`
+            : query;
 
         running = true;
         cancelRequested = false;
@@ -783,23 +881,31 @@
             const outputDirectory = await ensureOutputDirectory();
             if (!outputDirectory) throw new Error('Seleção da pasta de saída cancelada.');
             log('Validando a sessão existente do Chrome...');
-            log(`Query: ${query}`);
-            const search = parseSearchQuery(query);
-            if (search.filterQuery !== query) {
-                log(`Filtro enviado à API: ${search.filterQuery}`);
-                log(`Ordenação local: ${search.orderBy} ${search.sort}.`);
-            }
-            const expected = await getSearchCount(search.filterQuery);
-            log(`Zendesk informou ${expected ?? '?'} ticket(s) para a busca.`);
             await loadCustomStatuses();
-            let tickets = await collectTickets(search);
+            let tickets;
+            let expected = null;
+            if (ticketIds.length) {
+                tickets = ticketIds.map(id => ({ id }));
+                expected = tickets.length;
+                log(`Lista direta: ${tickets.length} ticket(s) único(s) informado(s). A query será ignorada nesta execução.`);
+            } else {
+                log(`Query: ${query}`);
+                const search = parseSearchQuery(query);
+                if (search.filterQuery !== query) {
+                    log(`Filtro enviado à API: ${search.filterQuery}`);
+                    log(`Ordenação local: ${search.orderBy} ${search.sort}.`);
+                }
+                expected = await getSearchCount(search.filterQuery);
+                log(`Zendesk informou ${expected ?? '?'} ticket(s) para a busca.`);
+                tickets = await collectTickets(search);
+            }
             if (cancelRequested) throw new Error('Exportação cancelada durante a busca.');
-            if (expected !== null && expected !== tickets.length) {
+            if (!ticketIds.length && expected !== null && expected !== tickets.length) {
                 log(`Aviso: a contagem mudou durante a coleta (${expected} → ${tickets.length}).`);
             }
             if (limit > 0) tickets = tickets.slice(0, limit);
 
-            const state = loadState(query);
+            const state = loadState(progressKey);
             if (!resume) state.completed = {};
             const pending = tickets.filter(ticket => !state.completed[String(ticket.id)]);
             const skipped = tickets.length - pending.length;
@@ -810,7 +916,7 @@
                 if (allRows.length) {
                     await saveBlobToDirectory(
                         new Blob([createManifestCsv(allRows)], { type: 'text/csv;charset=utf-8' }),
-                        `zendesk-tickets-manifesto-${queryId(query)}.csv`
+                        `zendesk-tickets-manifesto-${queryId(progressKey)}.csv`
                     );
                 }
                 log('Nenhum ticket pendente. Exportação já concluída.');
@@ -822,14 +928,17 @@
             const errorRows = [];
             for (let index = 0; index < pending.length; index += 1) {
                 if (cancelRequested) break;
-                await exportTicket(pending[index], index, pending.length, includePrivate, query, state, errorRows);
+                await exportTicket(
+                    pending[index], index, pending.length, includePrivate,
+                    sourceLabel, progressKey, state, errorRows
+                );
             }
 
             const allRows = [...Object.values(state.completed), ...errorRows];
             if (allRows.length) {
                 await saveBlobToDirectory(
                     new Blob([createManifestCsv(allRows)], { type: 'text/csv;charset=utf-8' }),
-                    `zendesk-tickets-manifesto-${queryId(query)}.csv`
+                    `zendesk-tickets-manifesto-${queryId(progressKey)}.csv`
                 );
             }
             log(cancelRequested
@@ -837,7 +946,7 @@
                 : `Concluído: ${allRows.length} ticket(s) registrados no progresso.`);
         } catch (error) {
             log(`ERRO: ${error.message}`);
-            console.error('[Zendesk N2 PDF]', error);
+            console.error('[Extrator de Tickets]', error);
         } finally {
             running = false;
             setRunningUi(false);
@@ -851,7 +960,7 @@
             status.textContent += `${status.textContent ? '\n' : ''}[${timestamp}] ${message}`;
             status.scrollTop = status.scrollHeight;
         }
-        console.log('[Zendesk N2 PDF]', message);
+        console.log('[Extrator de Tickets]', message);
     }
 
     function setRunningUi(isRunning) {
@@ -859,6 +968,8 @@
         document.querySelector('#attus-zdexp-reset').disabled = isRunning;
         document.querySelector('#attus-zdexp-select-folder').disabled = isRunning;
         document.querySelector('#attus-zdexp-query').disabled = isRunning;
+        document.querySelector('#attus-zdexp-ticket-list').disabled = isRunning;
+        document.querySelector('#attus-zdexp-file').disabled = isRunning;
         document.querySelector('#attus-zdexp-cancel').disabled = !isRunning;
     }
 
@@ -867,7 +978,7 @@
         const openButton = document.createElement('button');
         openButton.id = 'attus-zdexp-open';
         openButton.type = 'button';
-        openButton.textContent = 'PDF Zendesk';
+        openButton.textContent = 'Extrator de Tickets';
         const lastQuery = localStorage.getItem(QUERY_KEY) || DEFAULT_SEARCH_QUERY;
 
         const panel = document.createElement('section');
@@ -875,11 +986,17 @@
         panel.hidden = true;
         panel.innerHTML = `
             <button id="attus-zdexp-close" type="button" title="Fechar">×</button>
-            <h2>Exportar tickets do Zendesk</h2>
-            <p>Usa a sessão autenticada desta aba e gera PDFs pesquisáveis para qualquer busca.</p>
+            <h2>Extrator de Tickets</h2>
+            <p>Gera PDFs pesquisáveis usando uma query ou uma lista direta de tickets.</p>
             <div class="attus-zdexp-grid">
-                <label>Query da coleta
+                <label>Query da coleta (opcional quando houver lista)
                     <textarea id="attus-zdexp-query" spellcheck="false">${escapeHtml(lastQuery)}</textarea>
+                </label>
+                <label>Tickets específicos (IDs ou URLs, um por linha)
+                    <textarea id="attus-zdexp-ticket-list" spellcheck="false" placeholder="151088&#10;151089&#10;https://attus-ai.zendesk.com/agent/tickets/151090"></textarea>
+                </label>
+                <label>Importar lista TXT ou CSV
+                    <input id="attus-zdexp-file" type="file" accept=".txt,.csv,text/plain,text/csv">
                 </label>
                 <label>Limite de teste
                     <input id="attus-zdexp-limit" type="number" min="0" step="1" placeholder="0 = todos" value="0">
@@ -888,7 +1005,7 @@
             <label class="attus-zdexp-check"><input id="attus-zdexp-private" type="checkbox" checked> Incluir notas internas</label>
             <label class="attus-zdexp-check"><input id="attus-zdexp-resume" type="checkbox" checked> Retomar e pular PDFs já concluídos</label>
             <p id="attus-zdexp-folder">Nenhuma pasta selecionada.</p>
-            <p class="attus-zdexp-note">Selecione a pasta uma vez. Depois, os arquivos serão gravados nela sem confirmação individual. Para testar, use limite 1.</p>
+            <p class="attus-zdexp-note">Quando houver uma lista, ela terá prioridade e a query será ignorada. Arraste a borda inferior direita para redimensionar esta janela.</p>
             <div class="attus-zdexp-actions">
                 <button id="attus-zdexp-select-folder" type="button">Selecionar pasta</button>
                 <button id="attus-zdexp-start" class="primary" type="button">Iniciar exportação</button>
@@ -904,6 +1021,21 @@
         panel.querySelector('#attus-zdexp-select-folder').addEventListener('click', async () => {
             try { await selectOutputDirectory(); } catch (error) { log(`ERRO: ${error.message}`); }
         });
+        panel.querySelector('#attus-zdexp-file').addEventListener('change', async event => {
+            const file = event.target.files?.[0];
+            if (!file) return;
+            try {
+                const ticketIds = parseTicketIds(await file.text());
+                if (!ticketIds.length) {
+                    log(`ERRO: nenhum ID de ticket foi encontrado em ${file.name}.`);
+                    return;
+                }
+                panel.querySelector('#attus-zdexp-ticket-list').value = ticketIds.join('\n');
+                log(`${ticketIds.length} ticket(s) único(s) importado(s) de ${file.name}.`);
+            } catch (error) {
+                log(`ERRO ao ler ${file.name}: ${error.message}`);
+            }
+        });
         panel.querySelector('#attus-zdexp-start').addEventListener('click', startExport);
         panel.querySelector('#attus-zdexp-cancel').addEventListener('click', () => {
             cancelRequested = true;
@@ -911,11 +1043,18 @@
         });
         panel.querySelector('#attus-zdexp-reset').addEventListener('click', () => {
             const query = normalizeQuery(panel.querySelector('#attus-zdexp-query').value);
-            if (!query) {
-                log('ERRO: informe a query cujo progresso deve ser apagado.');
+            const ticketListText = panel.querySelector('#attus-zdexp-ticket-list').value.trim();
+            const ticketIds = parseTicketIds(ticketListText);
+            if (ticketListText && !ticketIds.length) {
+                log('ERRO: a lista não contém tickets válidos.');
                 return;
             }
-            if (window.confirm('Apagar o progresso salvo desta query?')) clearState(query);
+            const progressKey = ticketIds.length ? ticketListKey(ticketIds) : query;
+            if (!progressKey) {
+                log('ERRO: informe a query ou lista cujo progresso deve ser apagado.');
+                return;
+            }
+            if (window.confirm('Apagar o progresso salvo desta extração?')) clearState(progressKey);
         });
         restoreDirectoryHandle();
     }
