@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk - Exportar Tickets N2 Resolvidos para PDF
 // @namespace    https://attus-ai.zendesk.com/
-// @version      2026.07.16.02
+// @version      2026.07.16.03
 // @description  Exporta, usando a sessão já autenticada do Chrome, os tickets resolvidos do Suporte N2 | PGESP em arquivos PDF individuais.
 // @author       ATTUS
 // @match        https://attus-ai.zendesk.com/agent/*
@@ -19,7 +19,7 @@
     const BASE = 'https://attus-ai.zendesk.com';
     const SEARCH_QUERY = 'custom_status_id:27867450799003 group:"Suporte N2 | PGESP" order_by:updated_at sort:desc';
     const API_QUERY = 'custom_status_id:27867450799003 group:"Suporte N2 | PGESP"';
-    const STATE_KEY = 'attus:zendesk:n2-pdf-export:v1';
+    const STATE_KEY = 'attus:zendesk:n2-pdf-export:v2';
     const REQUEST_DELAY_MS = 120;
     const DOWNLOAD_DELAY_MS = 1200;
     const MAX_RETRIES = 5;
@@ -77,9 +77,13 @@
         }
         .attus-zdexp-note { color: #52606d; font-size: 11px; }
 
+        .attus-zdexp-render-layer {
+            position: fixed; inset: 0; z-index: 2147483647;
+            overflow: auto; margin: 0; padding: 0; background: #fff;
+        }
         .attus-zdexp-document {
-            position: absolute; left: -100000px; top: 0; width: 760px;
-            padding: 0; background: #fff; color: #172b4d;
+            position: static; width: 718px; margin: 0 auto; padding: 0;
+            background: #fff; color: #172b4d;
             font: 14px/1.5 Arial, Helvetica, sans-serif; overflow-wrap: anywhere;
         }
         .attus-zdexp-document * { box-sizing: border-box; }
@@ -429,6 +433,8 @@
             </section>`;
         }).join('');
 
+        const renderLayer = document.createElement('div');
+        renderLayer.className = 'attus-zdexp-render-layer';
         const root = document.createElement('article');
         root.className = 'attus-zdexp-document';
         root.innerHTML = `
@@ -450,13 +456,16 @@
             <h2>Conversa (${comments.length} comentário(s))</h2>
             ${commentsHtml || '<p><em>Nenhum comentário incluído.</em></p>'}
         `;
-        document.body.appendChild(root);
-        return root;
+        renderLayer.appendChild(root);
+        document.body.appendChild(renderLayer);
+        return { root, renderLayer };
     }
 
     async function renderPdfBlob(documentData) {
-        const root = buildDocumentElement(documentData);
+        const { root, renderLayer } = buildDocumentElement(documentData);
         try {
+            await document.fonts.ready;
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
             const options = {
                 margin: [8, 8, 10, 8],
                 image: { type: 'jpeg', quality: 0.94 },
@@ -466,7 +475,8 @@
                     allowTaint: false,
                     logging: false,
                     backgroundColor: '#ffffff',
-                    windowWidth: 900
+                    scrollX: 0,
+                    scrollY: 0
                 },
                 jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait', compress: true },
                 pagebreak: {
@@ -474,10 +484,9 @@
                     avoid: ['.attus-zdexp-summary', '.attus-zdexp-comment-head', '.attus-zdexp-attachments']
                 }
             };
-            const pdf = await html2pdf().set(options).from(root).toPdf().get('pdf');
-            return pdf.output('blob');
+            return await html2pdf().set(options).from(root).outputPdf('blob');
         } finally {
-            root.remove();
+            renderLayer.remove();
         }
     }
 
