@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk - Exportar Tickets para PDF pesquisável
 // @namespace    https://attus-ai.zendesk.com/
-// @version      2026.07.16.04
+// @version      2026.07.16.05
 // @description  Exporta tickets de uma busca editável do Zendesk em PDFs pesquisáveis, gravados diretamente em uma pasta escolhida.
 // @author       ATTUS
 // @match        https://attus-ai.zendesk.com/agent/*
@@ -180,16 +180,34 @@
         throw new Error(`A API não respondeu após ${MAX_RETRIES} tentativas. ${lastError}`);
     }
 
-    async function getSearchCount(query) {
+    function parseSearchQuery(query) {
+        const tokenValue = (name, fallback) => {
+            const pattern = new RegExp(`(?:^|\\s)${name}:("[^"]*"|'[^']*'|\\S+)`, 'i');
+            const match = query.match(pattern);
+            return match ? match[1].replace(/^["']|["']$/g, '') : fallback;
+        };
+        const orderBy = tokenValue('order_by', 'updated_at');
+        const requestedSort = tokenValue('sort', 'desc').toLowerCase();
+        const sort = requestedSort === 'asc' ? 'asc' : 'desc';
+        const filterQuery = normalizeQuery(
+            query
+                .replace(/(?:^|\s)order_by:(?:"[^"]*"|'[^']*'|\S+)/gi, ' ')
+                .replace(/(?:^|\s)sort:(?:"[^"]*"|'[^']*'|\S+)/gi, ' ')
+        );
+        if (!filterQuery) throw new Error('A query contém apenas opções de ordenação e não possui filtros.');
+        return { filterQuery, orderBy, sort };
+    }
+
+    async function getSearchCount(filterQuery) {
         const payload = await fetchJson(apiUrl('/api/v2/search/count.json', {
-            query: `type:ticket ${query}`
+            query: `type:ticket ${filterQuery}`
         }));
         return asNumber(payload.count);
     }
 
-    async function collectTickets(query) {
+    async function collectTickets({ filterQuery, orderBy, sort }) {
         let url = apiUrl('/api/v2/search/export.json', {
-            query,
+            query: filterQuery,
             'filter[type]': 'ticket',
             'page[size]': 100
         });
@@ -213,8 +231,9 @@
         }
 
         return [...byId.values()].sort((a, b) => {
-            const dateOrder = String(b.updated_at || '').localeCompare(String(a.updated_at || ''));
-            return dateOrder || Number(b.id || 0) - Number(a.id || 0);
+            const direction = sort === 'asc' ? 1 : -1;
+            const valueOrder = String(a?.[orderBy] ?? '').localeCompare(String(b?.[orderBy] ?? ''));
+            return valueOrder * direction || (Number(a.id || 0) - Number(b.id || 0)) * direction;
         });
     }
 
@@ -765,10 +784,15 @@
             if (!outputDirectory) throw new Error('Seleção da pasta de saída cancelada.');
             log('Validando a sessão existente do Chrome...');
             log(`Query: ${query}`);
-            const expected = await getSearchCount(query);
+            const search = parseSearchQuery(query);
+            if (search.filterQuery !== query) {
+                log(`Filtro enviado à API: ${search.filterQuery}`);
+                log(`Ordenação local: ${search.orderBy} ${search.sort}.`);
+            }
+            const expected = await getSearchCount(search.filterQuery);
             log(`Zendesk informou ${expected ?? '?'} ticket(s) para a busca.`);
             await loadCustomStatuses();
-            let tickets = await collectTickets(query);
+            let tickets = await collectTickets(search);
             if (cancelRequested) throw new Error('Exportação cancelada durante a busca.');
             if (expected !== null && expected !== tickets.length) {
                 log(`Aviso: a contagem mudou durante a coleta (${expected} → ${tickets.length}).`);
