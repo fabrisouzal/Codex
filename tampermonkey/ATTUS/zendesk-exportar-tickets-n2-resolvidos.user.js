@@ -1,13 +1,13 @@
 // ==UserScript==
-// @name         Zendesk - Exportar Tickets N2 Resolvidos para PDF
+// @name         Zendesk - Exportar Tickets para PDF pesquisável
 // @namespace    https://attus-ai.zendesk.com/
-// @version      2026.07.16.03
-// @description  Exporta, usando a sessão já autenticada do Chrome, os tickets resolvidos do Suporte N2 | PGESP em arquivos PDF individuais.
+// @version      2026.07.16.04
+// @description  Exporta tickets de uma busca editável do Zendesk em PDFs pesquisáveis, gravados diretamente em uma pasta escolhida.
 // @author       ATTUS
 // @match        https://attus-ai.zendesk.com/agent/*
 // @updateURL    https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/zendesk-exportar-tickets-n2-resolvidos.user.js
 // @downloadURL  https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/zendesk-exportar-tickets-n2-resolvidos.user.js
-// @require      https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.3/dist/html2pdf.bundle.min.js
+// @require      https://cdn.jsdelivr.net/npm/jspdf@3.0.1/dist/jspdf.umd.min.js
 // @grant        GM_addStyle
 // @run-at       document-idle
 // @noframes
@@ -17,9 +17,12 @@
     'use strict';
 
     const BASE = 'https://attus-ai.zendesk.com';
-    const SEARCH_QUERY = 'custom_status_id:27867450799003 group:"Suporte N2 | PGESP" order_by:updated_at sort:desc';
-    const API_QUERY = 'custom_status_id:27867450799003 group:"Suporte N2 | PGESP"';
-    const STATE_KEY = 'attus:zendesk:n2-pdf-export:v2';
+    const DEFAULT_SEARCH_QUERY = 'custom_status_id:27867450799003 group:"Suporte N2 | PGESP" order_by:updated_at sort:desc';
+    const STATE_PREFIX = 'attus:zendesk:pdf-export:v3:';
+    const QUERY_KEY = 'attus:zendesk:pdf-export:last-query:v1';
+    const HANDLE_DB = 'attus-zendesk-pdf-export';
+    const HANDLE_STORE = 'handles';
+    const HANDLE_KEY = 'output-directory';
     const REQUEST_DELAY_MS = 120;
     const DOWNLOAD_DELAY_MS = 1200;
     const MAX_RETRIES = 5;
@@ -29,6 +32,7 @@
     const statusCache = new Map();
     let cancelRequested = false;
     let running = false;
+    let directoryHandle = null;
 
     GM_addStyle(`
         #attus-zdexp-open {
@@ -61,6 +65,12 @@
         .attus-zdexp-grid input[type="number"] {
             width: 100%; padding: 7px; border: 1px solid #aebdca; border-radius: 5px;
         }
+        .attus-zdexp-grid textarea {
+            width: 100%; min-height: 86px; resize: vertical; padding: 7px;
+            border: 1px solid #aebdca; border-radius: 5px;
+            font: 11px/1.4 Consolas, monospace;
+        }
+        #attus-zdexp-folder { margin-top: 2px; color: #334e68; font-size: 11px; overflow-wrap: anywhere; }
         .attus-zdexp-check { display: flex; align-items: center; gap: 7px; margin: 8px 0; }
         .attus-zdexp-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 11px; }
         .attus-zdexp-actions button {
@@ -76,56 +86,6 @@
             white-space: pre-wrap; font: 11px/1.45 Consolas, monospace;
         }
         .attus-zdexp-note { color: #52606d; font-size: 11px; }
-
-        .attus-zdexp-render-layer {
-            position: fixed; inset: 0; z-index: 2147483647;
-            overflow: auto; margin: 0; padding: 0; background: #fff;
-        }
-        .attus-zdexp-document {
-            position: static; width: 718px; margin: 0 auto; padding: 0;
-            background: #fff; color: #172b4d;
-            font: 14px/1.5 Arial, Helvetica, sans-serif; overflow-wrap: anywhere;
-        }
-        .attus-zdexp-document * { box-sizing: border-box; }
-        .attus-zdexp-document h1 { margin: 0 0 12px; color: #102a43; font-size: 27px; line-height: 1.2; }
-        .attus-zdexp-document h2 { margin: 28px 0 12px; color: #16324f; font-size: 20px; }
-        .attus-zdexp-document a { color: #1259a7; text-decoration: none; }
-        .attus-zdexp-document pre { white-space: pre-wrap; background: #f4f6f8; padding: 10px; }
-        .attus-zdexp-document blockquote { margin: 10px 0; padding-left: 12px; border-left: 4px solid #7aa7d9; }
-        .attus-zdexp-ticket-number { margin-bottom: 6px; color: #52606d; font-size: 12px; }
-        .attus-zdexp-summary {
-            display: grid; grid-template-columns: 1fr 1fr; gap: 7px 18px;
-            margin: 18px 0; padding: 13px; background: #f5f8fb;
-            border-left: 5px solid #2f6fad; font-size: 12px; break-inside: avoid;
-        }
-        .attus-zdexp-wide { grid-column: 1 / -1; }
-        .attus-zdexp-source-query {
-            margin: 12px 0 22px; padding: 9px; background: #f8fafc;
-            border: 1px solid #d8e0e8; font: 10px/1.4 Consolas, monospace;
-        }
-        .attus-zdexp-comment {
-            margin: 0 0 16px; border: 1px solid #d8e0e8;
-            border-left-width: 5px; border-radius: 4px; break-inside: auto;
-        }
-        .attus-zdexp-comment.public { border-left-color: #2f855a; }
-        .attus-zdexp-comment.private { border-left-color: #b7791f; background: #fffdf5; }
-        .attus-zdexp-comment-head {
-            display: flex; justify-content: space-between; gap: 12px;
-            padding: 9px 11px; background: #f4f7fa; border-bottom: 1px solid #d8e0e8;
-            font-size: 11px; break-after: avoid; break-inside: avoid;
-        }
-        .attus-zdexp-comment.private .attus-zdexp-comment-head { background: #fff7df; }
-        .attus-zdexp-meta { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; color: #52606d; }
-        .attus-zdexp-badge { padding: 1px 6px; border-radius: 10px; background: #e2e8f0; }
-        .attus-zdexp-comment.public .attus-zdexp-badge { background: #dcfce7; color: #166534; }
-        .attus-zdexp-comment.private .attus-zdexp-badge { background: #fef3c7; color: #92400e; }
-        .attus-zdexp-comment-body { padding: 11px; }
-        .attus-zdexp-comment-body > :first-child { margin-top: 0; }
-        .attus-zdexp-comment-body > :last-child { margin-bottom: 0; }
-        .attus-zdexp-attachments, .attus-zdexp-inline-images {
-            margin: 0 11px 11px; padding: 8px; background: #eef3f8; font-size: 11px;
-        }
-        .attus-zdexp-attachments ul, .attus-zdexp-inline-images ul { margin: 4px 0 0; padding-left: 19px; }
     `);
 
     function sleep(ms) {
@@ -220,16 +180,16 @@
         throw new Error(`A API não respondeu após ${MAX_RETRIES} tentativas. ${lastError}`);
     }
 
-    async function getSearchCount() {
+    async function getSearchCount(query) {
         const payload = await fetchJson(apiUrl('/api/v2/search/count.json', {
-            query: `type:ticket ${API_QUERY}`
+            query: `type:ticket ${query}`
         }));
         return asNumber(payload.count);
     }
 
-    async function collectTickets() {
+    async function collectTickets(query) {
         let url = apiUrl('/api/v2/search/export.json', {
-            query: API_QUERY,
+            query,
             'filter[type]': 'ticket',
             'page[size]': 100
         });
@@ -372,25 +332,6 @@
         return { html: wrapper.innerHTML, inlineImages };
     }
 
-    function attachmentBlock(attachments) {
-        if (!attachments?.length) return '';
-        const items = attachments.map(item => {
-            const url = escapeHtml(item.content_url || '');
-            const name = escapeHtml(item.file_name || 'Anexo');
-            const size = formatBytes(item.size);
-            return `<li>${url ? `<a href="${url}">${name}</a>` : name}${size ? ` (${escapeHtml(size)})` : ''}</li>`;
-        }).join('');
-        return `<div class="attus-zdexp-attachments"><strong>Anexos:</strong><ul>${items}</ul></div>`;
-    }
-
-    function inlineImageBlock(images) {
-        if (!images.length) return '';
-        const items = images.map(item =>
-            `<li><a href="${escapeHtml(item.source)}">${escapeHtml(item.label)}</a></li>`
-        ).join('');
-        return `<div class="attus-zdexp-inline-images"><strong>Imagens do comentário:</strong><ul>${items}</ul></div>`;
-    }
-
     async function loadTicketDocument(searchTicket, includePrivate) {
         const ticketId = Number(searchTicket.id);
         const ticket = await loadTicket(ticketId);
@@ -407,87 +348,204 @@
         return { ticket, comments, group, customStatus };
     }
 
-    function buildDocumentElement(documentData) {
+    function toPdfText(value) {
+        return String(value ?? '')
+            .replace(/\u00a0/g, ' ')
+            .replace(/[\u2010-\u2015]/g, '-')
+            .replace(/[\u2018\u2019]/g, "'")
+            .replace(/[\u201c\u201d]/g, '"')
+            .replace(/\u2022/g, '-')
+            .replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\xFF]/g, '?');
+    }
+
+    function htmlToPlainText(html) {
+        const template = document.createElement('template');
+        template.innerHTML = String(html || '');
+        template.content.querySelectorAll('br').forEach(node => node.replaceWith('\n'));
+        template.content.querySelectorAll('li').forEach(node => {
+            node.prepend(document.createTextNode('- '));
+            node.append(document.createTextNode('\n'));
+        });
+        template.content.querySelectorAll('p, div, pre, blockquote, h1, h2, h3, h4, tr').forEach(node => {
+            node.append(document.createTextNode('\n'));
+        });
+        return toPdfText(template.content.textContent || '')
+            .split(/\r?\n/)
+            .map(line => line.replace(/[ \t]+/g, ' ').trim())
+            .join('\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+    }
+
+    async function renderPdfBlob(documentData, query) {
+        const JsPdf = window.jspdf?.jsPDF || window.jsPDF;
+        if (typeof JsPdf !== 'function') {
+            throw new Error('A biblioteca jsPDF não foi carregada.');
+        }
         const { ticket, comments, group, customStatus } = documentData;
         const ticketId = Number(ticket.id);
         const subject = ticket.subject || `Ticket ${ticketId}`;
         const ticketUrl = `${BASE}/agent/tickets/${ticketId}`;
-        const tags = (ticket.tags || []).join(', ') || 'Nenhuma';
+        const doc = new JsPdf({ unit: 'mm', format: 'a4', orientation: 'portrait', compress: true });
+        doc.setProperties({
+            title: toPdfText(`Ticket #${ticketId} - ${subject}`),
+            subject: toPdfText(`Exportação de ticket do Zendesk. Query: ${query}`),
+            author: 'Zendesk - Exportador de Tickets'
+        });
 
-        const commentsHtml = comments.map((comment, index) => {
+        const pageWidth = doc.internal.pageSize.getWidth();
+        const pageHeight = doc.internal.pageSize.getHeight();
+        const margin = { top: 14, right: 14, bottom: 16, left: 14 };
+        const contentWidth = pageWidth - margin.left - margin.right;
+        let y = margin.top;
+
+        const addPage = () => {
+            doc.addPage();
+            y = margin.top;
+        };
+        const ensureSpace = height => {
+            if (y + height > pageHeight - margin.bottom) addPage();
+        };
+        const wrappedLines = (text, size, width = contentWidth) => {
+            doc.setFontSize(size);
+            return doc.splitTextToSize(toPdfText(text) || '-', width);
+        };
+        const writeWrapped = (text, {
+            size = 10,
+            style = 'normal',
+            color = [23, 43, 77],
+            indent = 0,
+            after = 1.5,
+            lineHeight = size * 0.43
+        } = {}) => {
+            doc.setFont('helvetica', style);
+            doc.setFontSize(size);
+            doc.setTextColor(...color);
+            const lines = wrappedLines(text, size, contentWidth - indent);
+            for (const line of lines) {
+                ensureSpace(lineHeight);
+                doc.text(line, margin.left + indent, y);
+                y += lineHeight;
+            }
+            y += after;
+        };
+
+        doc.setTextColor(82, 96, 109);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.text(`TICKET #${ticketId}`, margin.left, y);
+        y += 7;
+        writeWrapped(subject, { size: 18, style: 'bold', color: [16, 42, 67], after: 4, lineHeight: 7.8 });
+
+        const summary = [
+            `Status: ${customStatus}`,
+            `Grupo: ${group}`,
+            `Solicitante: ${userLabel(ticket.requester_id)}`,
+            `Responsável: ${userLabel(ticket.assignee_id)}`,
+            `Criado em: ${formatDate(ticket.created_at)}`,
+            `Atualizado em: ${formatDate(ticket.updated_at)}`,
+            `Prioridade: ${ticket.priority || 'Não informada'}`,
+            `Tipo: ${ticket.type || 'Não informado'}`,
+            `Tags: ${(ticket.tags || []).join(', ') || 'Nenhuma'}`,
+            `Fonte: ${ticketUrl}`
+        ];
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9.2);
+        const summaryLineHeight = 4.1;
+        const summaryLines = summary.flatMap(item => wrappedLines(item, 9.2, contentWidth - 8));
+        const summaryHeight = summaryLines.length * summaryLineHeight + 6;
+        ensureSpace(summaryHeight);
+        doc.setFillColor(245, 248, 251);
+        doc.rect(margin.left, y, contentWidth, summaryHeight, 'F');
+        doc.setFillColor(47, 111, 173);
+        doc.rect(margin.left, y, 1.5, summaryHeight, 'F');
+        y += 4.5;
+        doc.setTextColor(23, 43, 77);
+        for (const line of summaryLines) {
+            doc.text(line, margin.left + 4, y);
+            y += summaryLineHeight;
+        }
+        y += 5;
+
+        writeWrapped(`Busca de origem: ${query}`, {
+            size: 8.4,
+            color: [82, 96, 109],
+            after: 5,
+            lineHeight: 3.7
+        });
+        writeWrapped(`Conversa (${comments.length} comentário(s))`, {
+            size: 14,
+            style: 'bold',
+            color: [22, 50, 79],
+            after: 3,
+            lineHeight: 6.2
+        });
+
+        if (!comments.length) {
+            writeWrapped('Nenhum comentário incluído.', { style: 'italic' });
+        }
+
+        comments.forEach((comment, index) => {
             const isPublic = Boolean(comment.public);
             const visibility = isPublic ? 'Público' : 'Nota interna';
             const sanitized = sanitizeCommentHtml(comment.html_body || comment.plain_body || comment.body || '');
-            return `<section class="attus-zdexp-comment ${isPublic ? 'public' : 'private'}">
-                <div class="attus-zdexp-comment-head">
-                    <div><strong>${escapeHtml(userLabel(comment.author_id))}</strong></div>
-                    <div class="attus-zdexp-meta">
-                        <span>${escapeHtml(formatDate(comment.created_at))}</span>
-                        <span class="attus-zdexp-badge">${visibility}</span>
-                        <span>#${index + 1}</span>
-                    </div>
-                </div>
-                <div class="attus-zdexp-comment-body">${sanitized.html || '<em>Comentário sem conteúdo textual.</em>'}</div>
-                ${inlineImageBlock(sanitized.inlineImages)}
-                ${attachmentBlock(comment.attachments || [])}
-            </section>`;
-        }).join('');
+            const body = htmlToPlainText(sanitized.html) || 'Comentário sem conteúdo textual.';
+            const header = `#${index + 1} | ${visibility} | ${formatDate(comment.created_at)} | ${userLabel(comment.author_id)}`;
+            const headerLines = wrappedLines(header, 9.1, contentWidth - 6);
+            const headerHeight = headerLines.length * 4 + 4;
+            ensureSpace(headerHeight + 8);
+            doc.setFillColor(...(isPublic ? [238, 247, 242] : [255, 247, 223]));
+            doc.rect(margin.left, y, contentWidth, headerHeight, 'F');
+            doc.setFillColor(...(isPublic ? [47, 133, 90] : [183, 121, 31]));
+            doc.rect(margin.left, y, 1.5, headerHeight, 'F');
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(9.1);
+            doc.setTextColor(23, 43, 77);
+            let headerY = y + 4.2;
+            for (const line of headerLines) {
+                doc.text(line, margin.left + 4, headerY);
+                headerY += 4;
+            }
+            y += headerHeight + 2.5;
+            writeWrapped(body, { size: 10, after: 2, lineHeight: 4.5 });
 
-        const renderLayer = document.createElement('div');
-        renderLayer.className = 'attus-zdexp-render-layer';
-        const root = document.createElement('article');
-        root.className = 'attus-zdexp-document';
-        root.innerHTML = `
-            <div class="attus-zdexp-ticket-number">TICKET #${ticketId}</div>
-            <h1>${escapeHtml(subject)}</h1>
-            <div class="attus-zdexp-summary">
-                <div><strong>Status:</strong> ${escapeHtml(customStatus)}</div>
-                <div><strong>Grupo:</strong> ${escapeHtml(group)}</div>
-                <div><strong>Solicitante:</strong> ${escapeHtml(userLabel(ticket.requester_id))}</div>
-                <div><strong>Responsável:</strong> ${escapeHtml(userLabel(ticket.assignee_id))}</div>
-                <div><strong>Criado em:</strong> ${escapeHtml(formatDate(ticket.created_at))}</div>
-                <div><strong>Atualizado em:</strong> ${escapeHtml(formatDate(ticket.updated_at))}</div>
-                <div><strong>Prioridade:</strong> ${escapeHtml(ticket.priority || 'Não informada')}</div>
-                <div><strong>Tipo:</strong> ${escapeHtml(ticket.type || 'Não informado')}</div>
-                <div class="attus-zdexp-wide"><strong>Tags:</strong> ${escapeHtml(tags)}</div>
-                <div class="attus-zdexp-wide"><strong>Fonte:</strong> <a href="${ticketUrl}">${ticketUrl}</a></div>
-            </div>
-            <div class="attus-zdexp-source-query"><strong>Busca de origem:</strong> ${escapeHtml(SEARCH_QUERY)}</div>
-            <h2>Conversa (${comments.length} comentário(s))</h2>
-            ${commentsHtml || '<p><em>Nenhum comentário incluído.</em></p>'}
-        `;
-        renderLayer.appendChild(root);
-        document.body.appendChild(renderLayer);
-        return { root, renderLayer };
-    }
-
-    async function renderPdfBlob(documentData) {
-        const { root, renderLayer } = buildDocumentElement(documentData);
-        try {
-            await document.fonts.ready;
-            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-            const options = {
-                margin: [8, 8, 10, 8],
-                image: { type: 'jpeg', quality: 0.94 },
-                html2canvas: {
-                    scale: 1.45,
-                    useCORS: true,
-                    allowTaint: false,
-                    logging: false,
-                    backgroundColor: '#ffffff',
-                    scrollX: 0,
-                    scrollY: 0
-                },
-                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait', compress: true },
-                pagebreak: {
-                    mode: ['css', 'legacy'],
-                    avoid: ['.attus-zdexp-summary', '.attus-zdexp-comment-head', '.attus-zdexp-attachments']
+            if (sanitized.inlineImages.length) {
+                writeWrapped('Imagens do comentário:', { size: 9, style: 'bold', after: 0.5 });
+                for (const image of sanitized.inlineImages) {
+                    writeWrapped(`- ${image.label}: ${image.source}`, {
+                        size: 8.2, color: [18, 89, 167], indent: 2, after: 0.5, lineHeight: 3.6
+                    });
                 }
-            };
-            return await html2pdf().set(options).from(root).outputPdf('blob');
-        } finally {
-            renderLayer.remove();
+            }
+            if (comment.attachments?.length) {
+                writeWrapped('Anexos:', { size: 9, style: 'bold', after: 0.5 });
+                for (const attachment of comment.attachments) {
+                    const size = formatBytes(attachment.size);
+                    const label = `- ${attachment.file_name || 'Anexo'}${size ? ` (${size})` : ''}`;
+                    const url = attachment.content_url ? `: ${attachment.content_url}` : '';
+                    writeWrapped(label + url, {
+                        size: 8.2, color: [18, 89, 167], indent: 2, after: 0.5, lineHeight: 3.6
+                    });
+                }
+            }
+            ensureSpace(3);
+            doc.setDrawColor(216, 224, 232);
+            doc.line(margin.left, y, pageWidth - margin.right, y);
+            y += 5;
+        });
+
+        const totalPages = doc.getNumberOfPages();
+        for (let pageNumber = 1; pageNumber <= totalPages; pageNumber += 1) {
+            doc.setPage(pageNumber);
+            doc.setDrawColor(216, 224, 232);
+            doc.line(margin.left, pageHeight - 11, pageWidth - margin.right, pageHeight - 11);
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(8);
+            doc.setTextColor(82, 96, 109);
+            doc.text(`Ticket #${ticketId}`, margin.left, pageHeight - 6.5);
+            doc.text(`Página ${pageNumber} de ${totalPages}`, pageWidth - margin.right, pageHeight - 6.5, { align: 'right' });
         }
+        return doc.output('blob');
     }
 
     function csvCell(value) {
@@ -497,7 +555,7 @@
     function createManifestCsv(rows) {
         const headers = [
             'id', 'assunto', 'status_zendesk', 'custom_status_id', 'grupo',
-            'criado_em', 'atualizado_em', 'comentarios', 'url', 'arquivo', 'erro'
+            'criado_em', 'atualizado_em', 'comentarios', 'url', 'query_origem', 'arquivo', 'erro'
         ];
         return '\uFEFF' + [
             headers.map(csvCell).join(';'),
@@ -505,40 +563,134 @@
         ].join('\r\n');
     }
 
-    function downloadBlob(blob, filename) {
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement('a');
-        anchor.href = url;
-        anchor.download = filename;
-        anchor.style.display = 'none';
-        document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    function normalizeQuery(value) {
+        return String(value || '').replace(/\s+/g, ' ').trim();
     }
 
-    function loadState() {
+    function queryId(query) {
+        let hash = 2166136261;
+        for (const char of query) {
+            hash ^= char.charCodeAt(0);
+            hash = Math.imul(hash, 16777619);
+        }
+        return (hash >>> 0).toString(16).padStart(8, '0');
+    }
+
+    function stateKey(query) {
+        return `${STATE_PREFIX}${queryId(query)}`;
+    }
+
+    function loadState(query) {
         try {
-            const state = JSON.parse(localStorage.getItem(STATE_KEY) || '{}');
-            if (state.query !== API_QUERY || typeof state.completed !== 'object') {
-                return { query: API_QUERY, completed: {} };
+            const state = JSON.parse(localStorage.getItem(stateKey(query)) || '{}');
+            if (state.query !== query || typeof state.completed !== 'object') {
+                return { query, completed: {} };
             }
             return state;
         } catch (_) {
-            return { query: API_QUERY, completed: {} };
+            return { query, completed: {} };
         }
     }
 
-    function saveState(state) {
-        localStorage.setItem(STATE_KEY, JSON.stringify(state));
+    function saveState(query, state) {
+        localStorage.setItem(stateKey(query), JSON.stringify(state));
     }
 
-    function clearState() {
-        localStorage.removeItem(STATE_KEY);
-        log('Progresso anterior apagado. A próxima execução começará do primeiro ticket.');
+    function clearState(query) {
+        localStorage.removeItem(stateKey(query));
+        log('Progresso desta query apagado. A próxima execução começará do primeiro ticket.');
     }
 
-    function manifestRow(documentData, filename, error = '') {
+    function openHandleDatabase() {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open(HANDLE_DB, 1);
+            request.onupgradeneeded = () => {
+                if (!request.result.objectStoreNames.contains(HANDLE_STORE)) {
+                    request.result.createObjectStore(HANDLE_STORE);
+                }
+            };
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+    }
+
+    async function persistDirectoryHandle(handle) {
+        const db = await openHandleDatabase();
+        await new Promise((resolve, reject) => {
+            const transaction = db.transaction(HANDLE_STORE, 'readwrite');
+            transaction.objectStore(HANDLE_STORE).put(handle, HANDLE_KEY);
+            transaction.oncomplete = resolve;
+            transaction.onerror = () => reject(transaction.error);
+        });
+        db.close();
+    }
+
+    async function restoreDirectoryHandle() {
+        try {
+            const db = await openHandleDatabase();
+            directoryHandle = await new Promise((resolve, reject) => {
+                const transaction = db.transaction(HANDLE_STORE, 'readonly');
+                const request = transaction.objectStore(HANDLE_STORE).get(HANDLE_KEY);
+                request.onsuccess = () => resolve(request.result || null);
+                request.onerror = () => reject(request.error);
+            });
+            db.close();
+        } catch (_) {
+            directoryHandle = null;
+        }
+        updateFolderLabel();
+    }
+
+    function updateFolderLabel() {
+        const label = document.querySelector('#attus-zdexp-folder');
+        if (label) {
+            label.textContent = directoryHandle
+                ? `Pasta selecionada: ${directoryHandle.name}`
+                : 'Nenhuma pasta selecionada.';
+        }
+    }
+
+    async function selectOutputDirectory() {
+        if (typeof window.showDirectoryPicker !== 'function') {
+            throw new Error('Este Chrome não oferece gravação direta em pasta. Atualize o navegador.');
+        }
+        try {
+            directoryHandle = await window.showDirectoryPicker({
+                id: 'attus-zendesk-pdf-export',
+                mode: 'readwrite',
+                startIn: 'downloads'
+            });
+            await persistDirectoryHandle(directoryHandle);
+            updateFolderLabel();
+            log(`Pasta selecionada: ${directoryHandle.name}. Os arquivos serão gravados sem perguntas individuais.`);
+            return directoryHandle;
+        } catch (error) {
+            if (error?.name === 'AbortError') return null;
+            throw error;
+        }
+    }
+
+    async function ensureOutputDirectory() {
+        if (directoryHandle) {
+            const options = { mode: 'readwrite' };
+            if (await directoryHandle.queryPermission(options) === 'granted') return directoryHandle;
+            if (await directoryHandle.requestPermission(options) === 'granted') return directoryHandle;
+        }
+        return selectOutputDirectory();
+    }
+
+    async function saveBlobToDirectory(blob, filename) {
+        if (!directoryHandle) throw new Error('Nenhuma pasta de saída foi selecionada.');
+        const fileHandle = await directoryHandle.getFileHandle(filename, { create: true });
+        const writable = await fileHandle.createWritable();
+        try {
+            await writable.write(blob);
+        } finally {
+            await writable.close();
+        }
+    }
+
+    function manifestRow(documentData, filename, query, error = '') {
         const { ticket, comments, group } = documentData;
         return {
             id: ticket.id,
@@ -550,27 +702,24 @@
             atualizado_em: ticket.updated_at || '',
             comentarios: comments.length,
             url: `${BASE}/agent/tickets/${ticket.id}`,
+            query_origem: query,
             arquivo: filename,
             erro: error
         };
     }
 
-    async function exportTicket(searchTicket, index, total, includePrivate, state, errorRows) {
+    async function exportTicket(searchTicket, index, total, includePrivate, query, state, errorRows) {
         log(`Preparando ticket #${searchTicket.id} (${index + 1}/${total})...`);
         try {
             const documentData = await loadTicketDocument(searchTicket, includePrivate);
             const filename = `${documentData.ticket.id}-${safeFilename(documentData.ticket.subject)}.pdf`;
-            const pdfBlob = await renderPdfBlob(documentData);
-            const row = manifestRow(documentData, filename);
+            const pdfBlob = await renderPdfBlob(documentData, query);
+            const row = manifestRow(documentData, filename, query);
 
-            downloadBlob(pdfBlob, filename);
+            await saveBlobToDirectory(pdfBlob, filename);
             state.completed[String(documentData.ticket.id)] = row;
-            saveState(state);
-            log(`Download iniciado: ${filename} (${index + 1}/${total}).`);
-
-            if (index === 0 && total > 1) {
-                log('Se o Chrome solicitar, clique em "Permitir" para autorizar downloads múltiplos.');
-            }
+            saveState(query, state);
+            log(`PDF salvo: ${filename} (${index + 1}/${total}).`);
         } catch (error) {
             errorRows.push({
                 id: searchTicket.id,
@@ -582,6 +731,7 @@
                 atualizado_em: searchTicket.updated_at || '',
                 comentarios: '',
                 url: `${BASE}/agent/tickets/${searchTicket.id}`,
+                query_origem: query,
                 arquivo: '',
                 erro: error.message
             });
@@ -592,10 +742,16 @@
 
     async function startExport() {
         if (running) return;
-        if (typeof html2pdf !== 'function') {
+        if (typeof (window.jspdf?.jsPDF || window.jsPDF) !== 'function') {
             log('ERRO: a biblioteca de PDF não foi carregada. Recarregue a página e tente novamente.');
             return;
         }
+        const query = normalizeQuery(document.querySelector('#attus-zdexp-query').value);
+        if (!query) {
+            log('ERRO: informe uma query do Zendesk.');
+            return;
+        }
+        localStorage.setItem(QUERY_KEY, query);
 
         running = true;
         cancelRequested = false;
@@ -605,18 +761,21 @@
         const resume = document.querySelector('#attus-zdexp-resume').checked;
 
         try {
+            const outputDirectory = await ensureOutputDirectory();
+            if (!outputDirectory) throw new Error('Seleção da pasta de saída cancelada.');
             log('Validando a sessão existente do Chrome...');
-            const expected = await getSearchCount();
+            log(`Query: ${query}`);
+            const expected = await getSearchCount(query);
             log(`Zendesk informou ${expected ?? '?'} ticket(s) para a busca.`);
             await loadCustomStatuses();
-            let tickets = await collectTickets();
+            let tickets = await collectTickets(query);
             if (cancelRequested) throw new Error('Exportação cancelada durante a busca.');
             if (expected !== null && expected !== tickets.length) {
                 log(`Aviso: a contagem mudou durante a coleta (${expected} → ${tickets.length}).`);
             }
             if (limit > 0) tickets = tickets.slice(0, limit);
 
-            const state = loadState();
+            const state = loadState(query);
             if (!resume) state.completed = {};
             const pending = tickets.filter(ticket => !state.completed[String(ticket.id)]);
             const skipped = tickets.length - pending.length;
@@ -625,32 +784,28 @@
             if (!pending.length) {
                 const allRows = Object.values(state.completed);
                 if (allRows.length) {
-                    downloadBlob(new Blob([createManifestCsv(allRows)], { type: 'text/csv;charset=utf-8' }), 'zendesk-n2-resolvidos-manifesto-geral.csv');
+                    await saveBlobToDirectory(
+                        new Blob([createManifestCsv(allRows)], { type: 'text/csv;charset=utf-8' }),
+                        `zendesk-tickets-manifesto-${queryId(query)}.csv`
+                    );
                 }
                 log('Nenhum ticket pendente. Exportação já concluída.');
                 return;
             }
 
-            const confirmed = window.confirm(
-                `Serão baixados ${pending.length} arquivo(s) PDF individual(is).\n\n` +
-                'Mantenha esta aba aberta. Se o Chrome perguntar, permita downloads múltiplos para o Zendesk.'
-            );
-            if (!confirmed) {
-                log('Exportação não iniciada pelo usuário.');
-                return;
-            }
+            log(`Iniciando a gravação de ${pending.length} PDF(s) em "${outputDirectory.name}" sem perguntas por arquivo.`);
 
             const errorRows = [];
             for (let index = 0; index < pending.length; index += 1) {
                 if (cancelRequested) break;
-                await exportTicket(pending[index], index, pending.length, includePrivate, state, errorRows);
+                await exportTicket(pending[index], index, pending.length, includePrivate, query, state, errorRows);
             }
 
             const allRows = [...Object.values(state.completed), ...errorRows];
             if (allRows.length) {
-                downloadBlob(
+                await saveBlobToDirectory(
                     new Blob([createManifestCsv(allRows)], { type: 'text/csv;charset=utf-8' }),
-                    'zendesk-n2-resolvidos-manifesto-geral.csv'
+                    `zendesk-tickets-manifesto-${queryId(query)}.csv`
                 );
             }
             log(cancelRequested
@@ -678,6 +833,8 @@
     function setRunningUi(isRunning) {
         document.querySelector('#attus-zdexp-start').disabled = isRunning;
         document.querySelector('#attus-zdexp-reset').disabled = isRunning;
+        document.querySelector('#attus-zdexp-select-folder').disabled = isRunning;
+        document.querySelector('#attus-zdexp-query').disabled = isRunning;
         document.querySelector('#attus-zdexp-cancel').disabled = !isRunning;
     }
 
@@ -686,28 +843,33 @@
         const openButton = document.createElement('button');
         openButton.id = 'attus-zdexp-open';
         openButton.type = 'button';
-        openButton.textContent = 'PDF N2';
+        openButton.textContent = 'PDF Zendesk';
+        const lastQuery = localStorage.getItem(QUERY_KEY) || DEFAULT_SEARCH_QUERY;
 
         const panel = document.createElement('section');
         panel.id = 'attus-zdexp-panel';
         panel.hidden = true;
         panel.innerHTML = `
             <button id="attus-zdexp-close" type="button" title="Fechar">×</button>
-            <h2>Exportar tickets N2</h2>
-            <p>Usa a sessão autenticada desta aba do Chrome e baixa um PDF individual por ticket.</p>
-            <div class="attus-zdexp-query">${escapeHtml(SEARCH_QUERY)}</div>
+            <h2>Exportar tickets do Zendesk</h2>
+            <p>Usa a sessão autenticada desta aba e gera PDFs pesquisáveis para qualquer busca.</p>
             <div class="attus-zdexp-grid">
+                <label>Query da coleta
+                    <textarea id="attus-zdexp-query" spellcheck="false">${escapeHtml(lastQuery)}</textarea>
+                </label>
                 <label>Limite de teste
                     <input id="attus-zdexp-limit" type="number" min="0" step="1" placeholder="0 = todos" value="0">
                 </label>
             </div>
             <label class="attus-zdexp-check"><input id="attus-zdexp-private" type="checkbox" checked> Incluir notas internas</label>
             <label class="attus-zdexp-check"><input id="attus-zdexp-resume" type="checkbox" checked> Retomar e pular PDFs já concluídos</label>
-            <p class="attus-zdexp-note">Para testar, use limite 1. Durante a exportação, mantenha esta aba aberta.</p>
+            <p id="attus-zdexp-folder">Nenhuma pasta selecionada.</p>
+            <p class="attus-zdexp-note">Selecione a pasta uma vez. Depois, os arquivos serão gravados nela sem confirmação individual. Para testar, use limite 1.</p>
             <div class="attus-zdexp-actions">
+                <button id="attus-zdexp-select-folder" type="button">Selecionar pasta</button>
                 <button id="attus-zdexp-start" class="primary" type="button">Iniciar exportação</button>
                 <button id="attus-zdexp-cancel" class="danger" type="button" disabled>Cancelar</button>
-                <button id="attus-zdexp-reset" type="button">Apagar progresso</button>
+                <button id="attus-zdexp-reset" type="button">Apagar progresso desta query</button>
             </div>
             <pre id="attus-zdexp-status">Pronto. Recomenda-se testar primeiro com limite 1.</pre>
         `;
@@ -715,14 +877,23 @@
         document.body.append(openButton, panel);
         openButton.addEventListener('click', () => { panel.hidden = !panel.hidden; });
         panel.querySelector('#attus-zdexp-close').addEventListener('click', () => { panel.hidden = true; });
+        panel.querySelector('#attus-zdexp-select-folder').addEventListener('click', async () => {
+            try { await selectOutputDirectory(); } catch (error) { log(`ERRO: ${error.message}`); }
+        });
         panel.querySelector('#attus-zdexp-start').addEventListener('click', startExport);
         panel.querySelector('#attus-zdexp-cancel').addEventListener('click', () => {
             cancelRequested = true;
             log('Cancelamento solicitado; finalizando a etapa atual...');
         });
         panel.querySelector('#attus-zdexp-reset').addEventListener('click', () => {
-            if (window.confirm('Apagar o progresso salvo desta exportação?')) clearState();
+            const query = normalizeQuery(panel.querySelector('#attus-zdexp-query').value);
+            if (!query) {
+                log('ERRO: informe a query cujo progresso deve ser apagado.');
+                return;
+            }
+            if (window.confirm('Apagar o progresso salvo desta query?')) clearState(query);
         });
+        restoreDirectoryHandle();
     }
 
     createUi();
