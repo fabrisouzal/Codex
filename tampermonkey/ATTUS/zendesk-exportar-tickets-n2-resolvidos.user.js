@@ -1,14 +1,13 @@
 // ==UserScript==
 // @name         Zendesk - Exportar Tickets N2 Resolvidos para PDF
 // @namespace    https://attus-ai.zendesk.com/
-// @version      2026.07.16.01
-// @description  Exporta, usando a sessão já autenticada do Chrome, os tickets resolvidos do Suporte N2 | PGESP em lotes ZIP de PDFs.
+// @version      2026.07.16.02
+// @description  Exporta, usando a sessão já autenticada do Chrome, os tickets resolvidos do Suporte N2 | PGESP em arquivos PDF individuais.
 // @author       ATTUS
 // @match        https://attus-ai.zendesk.com/agent/*
 // @updateURL    https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/zendesk-exportar-tickets-n2-resolvidos.user.js
 // @downloadURL  https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/zendesk-exportar-tickets-n2-resolvidos.user.js
 // @require      https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.3/dist/html2pdf.bundle.min.js
-// @require      https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js
 // @grant        GM_addStyle
 // @run-at       document-idle
 // @noframes
@@ -57,7 +56,7 @@
             margin: 9px 0; padding: 8px; border: 1px solid #d8e0e8; border-radius: 5px;
             background: #f8fafc; font: 11px/1.35 Consolas, monospace; overflow-wrap: anywhere;
         }
-        .attus-zdexp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin: 10px 0; }
+        .attus-zdexp-grid { display: grid; grid-template-columns: 1fr; gap: 9px; margin: 10px 0; }
         .attus-zdexp-grid label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; }
         .attus-zdexp-grid input[type="number"] {
             width: 100%; padding: 7px; border: 1px solid #aebdca; border-radius: 5px;
@@ -506,7 +505,7 @@
         document.body.appendChild(anchor);
         anchor.click();
         anchor.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        setTimeout(() => URL.revokeObjectURL(url), 30_000);
     }
 
     function loadState() {
@@ -547,64 +546,45 @@
         };
     }
 
-    async function exportBatch(batch, batchIndex, totalBatches, includePrivate, state) {
-        const zip = new JSZip();
-        const rows = [];
-        const completedThisBatch = [];
+    async function exportTicket(searchTicket, index, total, includePrivate, state, errorRows) {
+        log(`Preparando ticket #${searchTicket.id} (${index + 1}/${total})...`);
+        try {
+            const documentData = await loadTicketDocument(searchTicket, includePrivate);
+            const filename = `${documentData.ticket.id}-${safeFilename(documentData.ticket.subject)}.pdf`;
+            const pdfBlob = await renderPdfBlob(documentData);
+            const row = manifestRow(documentData, filename);
 
-        for (let index = 0; index < batch.length; index += 1) {
-            if (cancelRequested) break;
-            const searchTicket = batch[index];
-            const position = batchIndex * batch.length + index + 1;
-            log(`Lote ${batchIndex + 1}/${totalBatches}: preparando ticket #${searchTicket.id}...`);
-            try {
-                const documentData = await loadTicketDocument(searchTicket, includePrivate);
-                const filename = `${documentData.ticket.id}-${safeFilename(documentData.ticket.subject)}.pdf`;
-                const pdfBlob = await renderPdfBlob(documentData);
-                zip.file(filename, pdfBlob);
-                const row = manifestRow(documentData, filename);
-                rows.push(row);
-                completedThisBatch.push({ id: String(documentData.ticket.id), row });
-                log(`PDF pronto: #${documentData.ticket.id} (${position}).`);
-            } catch (error) {
-                rows.push({
-                    id: searchTicket.id,
-                    assunto: searchTicket.subject || '',
-                    status_zendesk: searchTicket.status || '',
-                    custom_status_id: searchTicket.custom_status_id || '',
-                    grupo: '',
-                    criado_em: searchTicket.created_at || '',
-                    atualizado_em: searchTicket.updated_at || '',
-                    comentarios: '',
-                    url: `${BASE}/agent/tickets/${searchTicket.id}`,
-                    arquivo: '',
-                    erro: error.message
-                });
-                log(`ERRO no ticket #${searchTicket.id}: ${error.message}`);
+            downloadBlob(pdfBlob, filename);
+            state.completed[String(documentData.ticket.id)] = row;
+            saveState(state);
+            log(`Download iniciado: ${filename} (${index + 1}/${total}).`);
+
+            if (index === 0 && total > 1) {
+                log('Se o Chrome solicitar, clique em "Permitir" para autorizar downloads múltiplos.');
             }
-            await sleep(REQUEST_DELAY_MS);
+        } catch (error) {
+            errorRows.push({
+                id: searchTicket.id,
+                assunto: searchTicket.subject || '',
+                status_zendesk: searchTicket.status || '',
+                custom_status_id: searchTicket.custom_status_id || '',
+                grupo: '',
+                criado_em: searchTicket.created_at || '',
+                atualizado_em: searchTicket.updated_at || '',
+                comentarios: '',
+                url: `${BASE}/agent/tickets/${searchTicket.id}`,
+                arquivo: '',
+                erro: error.message
+            });
+            log(`ERRO no ticket #${searchTicket.id}: ${error.message}`);
         }
-
-        if (!completedThisBatch.length && !rows.length) return;
-        zip.file('manifesto.csv', createManifestCsv(rows));
-        log(`Compactando lote ${batchIndex + 1}/${totalBatches}...`);
-        const zipBlob = await zip.generateAsync(
-            { type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } },
-            metadata => log(`Compactando lote ${batchIndex + 1}: ${metadata.percent.toFixed(0)}%.`)
-        );
-        const zipName = `zendesk-n2-resolvidos-lote-${String(batchIndex + 1).padStart(3, '0')}-de-${String(totalBatches).padStart(3, '0')}.zip`;
-        downloadBlob(zipBlob, zipName);
-
-        for (const item of completedThisBatch) state.completed[item.id] = item.row;
-        saveState(state);
-        log(`Download iniciado: ${zipName}`);
         await sleep(DOWNLOAD_DELAY_MS);
     }
 
     async function startExport() {
         if (running) return;
-        if (typeof html2pdf !== 'function' || typeof JSZip !== 'function') {
-            log('ERRO: as bibliotecas de PDF/ZIP não foram carregadas. Recarregue a página e tente novamente.');
+        if (typeof html2pdf !== 'function') {
+            log('ERRO: a biblioteca de PDF não foi carregada. Recarregue a página e tente novamente.');
             return;
         }
 
@@ -612,7 +592,6 @@
         cancelRequested = false;
         setRunningUi(true);
         const limit = Math.max(0, Number(document.querySelector('#attus-zdexp-limit').value || 0));
-        const batchSize = Math.max(1, Math.min(30, Number(document.querySelector('#attus-zdexp-batch').value || 10)));
         const includePrivate = document.querySelector('#attus-zdexp-private').checked;
         const resume = document.querySelector('#attus-zdexp-resume').checked;
 
@@ -643,9 +622,8 @@
                 return;
             }
 
-            const totalBatches = Math.ceil(pending.length / batchSize);
             const confirmed = window.confirm(
-                `Serão exportados ${pending.length} ticket(s) em ${totalBatches} arquivo(s) ZIP.\n\n` +
+                `Serão baixados ${pending.length} arquivo(s) PDF individual(is).\n\n` +
                 'Mantenha esta aba aberta. Se o Chrome perguntar, permita downloads múltiplos para o Zendesk.'
             );
             if (!confirmed) {
@@ -653,14 +631,13 @@
                 return;
             }
 
-            for (let batchIndex = 0; batchIndex < totalBatches; batchIndex += 1) {
+            const errorRows = [];
+            for (let index = 0; index < pending.length; index += 1) {
                 if (cancelRequested) break;
-                const start = batchIndex * batchSize;
-                const batch = pending.slice(start, start + batchSize);
-                await exportBatch(batch, batchIndex, totalBatches, includePrivate, state);
+                await exportTicket(pending[index], index, pending.length, includePrivate, state, errorRows);
             }
 
-            const allRows = Object.values(state.completed);
+            const allRows = [...Object.values(state.completed), ...errorRows];
             if (allRows.length) {
                 downloadBlob(
                     new Blob([createManifestCsv(allRows)], { type: 'text/csv;charset=utf-8' }),
@@ -668,7 +645,7 @@
                 );
             }
             log(cancelRequested
-                ? 'Exportação interrompida. Os lotes concluídos foram salvos e podem ser retomados.'
+                ? 'Exportação interrompida. Os PDFs concluídos foram salvos e podem ser retomados.'
                 : `Concluído: ${allRows.length} ticket(s) registrados no progresso.`);
         } catch (error) {
             log(`ERRO: ${error.message}`);
@@ -708,18 +685,15 @@
         panel.innerHTML = `
             <button id="attus-zdexp-close" type="button" title="Fechar">×</button>
             <h2>Exportar tickets N2</h2>
-            <p>Usa a sessão autenticada desta aba do Chrome e gera PDFs em lotes ZIP.</p>
+            <p>Usa a sessão autenticada desta aba do Chrome e baixa um PDF individual por ticket.</p>
             <div class="attus-zdexp-query">${escapeHtml(SEARCH_QUERY)}</div>
             <div class="attus-zdexp-grid">
                 <label>Limite de teste
                     <input id="attus-zdexp-limit" type="number" min="0" step="1" placeholder="0 = todos" value="0">
                 </label>
-                <label>PDFs por ZIP
-                    <input id="attus-zdexp-batch" type="number" min="1" max="30" step="1" value="10">
-                </label>
             </div>
             <label class="attus-zdexp-check"><input id="attus-zdexp-private" type="checkbox" checked> Incluir notas internas</label>
-            <label class="attus-zdexp-check"><input id="attus-zdexp-resume" type="checkbox" checked> Retomar e pular lotes já concluídos</label>
+            <label class="attus-zdexp-check"><input id="attus-zdexp-resume" type="checkbox" checked> Retomar e pular PDFs já concluídos</label>
             <p class="attus-zdexp-note">Para testar, use limite 1. Durante a exportação, mantenha esta aba aberta.</p>
             <div class="attus-zdexp-actions">
                 <button id="attus-zdexp-start" class="primary" type="button">Iniciar exportação</button>
