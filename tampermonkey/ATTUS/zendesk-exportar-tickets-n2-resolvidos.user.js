@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk - Exportar Tickets N2 Resolvidos para PDF
 // @namespace    https://attus-ai.zendesk.com/
-// @version      2026.07.15.01
+// @version      2026.07.16.01
 // @description  Exporta, usando a sessão já autenticada do Chrome, os tickets resolvidos do Suporte N2 | PGESP em lotes ZIP de PDFs.
 // @author       ATTUS
 // @match        https://attus-ai.zendesk.com/agent/*
@@ -311,19 +311,13 @@
 
     async function loadCustomStatuses() {
         try {
-            let url = apiUrl('/api/v2/custom_statuses.json', { 'page[size]': 100 });
-            const seenPages = new Set();
-            while (url) {
-                if (seenPages.has(url)) break;
-                seenPages.add(url);
-                const payload = await fetchJson(url);
-                for (const item of payload.custom_statuses || []) {
-                    const id = asNumber(item?.id);
-                    if (id) {
-                        statusCache.set(id, item.agent_label || item.end_user_label || item.name || `Status ${id}`);
-                    }
+            // Este endpoint retorna a lista completa e não aceita paginação.
+            const payload = await fetchJson(apiUrl('/api/v2/custom_statuses.json'));
+            for (const item of payload.custom_statuses || []) {
+                const id = asNumber(item?.id);
+                if (id) {
+                    statusCache.set(id, item.agent_label || item.end_user_label || item.name || `Status ${id}`);
                 }
-                url = payload.meta?.has_more && payload.links?.next ? payload.links.next : null;
             }
         } catch (error) {
             log(`Aviso: nomes dos status não puderam ser carregados: ${error.message}`);
@@ -549,7 +543,7 @@
             comentarios: comments.length,
             url: `${BASE}/agent/tickets/${ticket.id}`,
             arquivo: filename,
-            erro
+            erro: error
         };
     }
 
