@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk - Extrator de Tickets
 // @namespace    https://attus-ai.zendesk.com/
-// @version      2026.07.16.06
+// @version      2026.07.16.07
 // @description  Exporta tickets de uma busca editável do Zendesk em PDFs pesquisáveis, gravados diretamente em uma pasta escolhida.
 // @author       ATTUS
 // @match        https://attus-ai.zendesk.com/agent/*
@@ -17,9 +17,8 @@
     'use strict';
 
     const BASE = 'https://attus-ai.zendesk.com';
-    const DEFAULT_SEARCH_QUERY = 'custom_status_id:27867450799003 group:"Suporte N2 | PGESP" order_by:updated_at sort:desc';
     const STATE_PREFIX = 'attus:zendesk:pdf-export:v3:';
-    const QUERY_KEY = 'attus:zendesk:pdf-export:last-query:v1';
+    const LEGACY_QUERY_KEY = 'attus:zendesk:pdf-export:last-query:v1';
     const HANDLE_DB = 'attus-zendesk-pdf-export';
     const HANDLE_STORE = 'handles';
     const HANDLE_KEY = 'output-directory';
@@ -36,14 +35,14 @@
 
     GM_addStyle(`
         #attus-zdexp-open {
-            position: fixed; right: 76px; top: 7px; z-index: 2147483646;
+            position: fixed; right: 476px; top: 7px; z-index: 2147483646;
             border: 0; border-radius: 6px; padding: 9px 13px;
             background: #174ea6; color: #fff; font: 600 13px/1 Arial, sans-serif;
             box-shadow: 0 5px 18px rgba(0,0,0,.28); cursor: pointer;
         }
         #attus-zdexp-open:hover { background: #123d82; }
         #attus-zdexp-panel {
-            position: fixed; right: 18px; top: 50px; z-index: 2147483647;
+            position: fixed; right: 418px; top: 50px; z-index: 2147483647;
             width: 460px; height: min(650px, calc(100vh - 68px));
             min-width: 330px; min-height: 300px;
             max-width: calc(100vw - 36px); max-height: calc(100vh - 68px);
@@ -57,10 +56,6 @@
         #attus-zdexp-close {
             position: absolute; top: 8px; right: 9px; border: 0; background: transparent;
             color: #52606d; font-size: 23px; cursor: pointer;
-        }
-        .attus-zdexp-query {
-            margin: 9px 0; padding: 8px; border: 1px solid #d8e0e8; border-radius: 5px;
-            background: #f8fafc; font: 11px/1.35 Consolas, monospace; overflow-wrap: anywhere;
         }
         .attus-zdexp-grid { display: grid; grid-template-columns: 1fr; gap: 9px; margin: 10px 0; }
         .attus-zdexp-grid label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; }
@@ -94,15 +89,6 @@
 
     function sleep(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
-    }
-
-    function escapeHtml(value) {
-        return String(value ?? '')
-            .replaceAll('&', '&amp;')
-            .replaceAll('<', '&lt;')
-            .replaceAll('>', '&gt;')
-            .replaceAll('"', '&quot;')
-            .replaceAll("'", '&#039;');
     }
 
     function safeFilename(value, maxLength = 125) {
@@ -708,6 +694,24 @@
         log('Progresso desta query apagado. A próxima execução começará do primeiro ticket.');
     }
 
+    function clearEverything(panel) {
+        const keysToRemove = [];
+        for (let index = 0; index < localStorage.length; index += 1) {
+            const key = localStorage.key(index);
+            if (key?.startsWith(STATE_PREFIX)) keysToRemove.push(key);
+        }
+        keysToRemove.forEach(key => localStorage.removeItem(key));
+        localStorage.removeItem(LEGACY_QUERY_KEY);
+        panel.querySelector('#attus-zdexp-query').value = '';
+        panel.querySelector('#attus-zdexp-ticket-list').value = '';
+        panel.querySelector('#attus-zdexp-file').value = '';
+        panel.querySelector('#attus-zdexp-limit').value = '0';
+        panel.querySelector('#attus-zdexp-private').checked = true;
+        panel.querySelector('#attus-zdexp-resume').checked = true;
+        panel.querySelector('#attus-zdexp-status').textContent = '';
+        log(`Tudo limpo: campos e ${keysToRemove.length} progresso(s) salvo(s) foram removidos.`);
+    }
+
     function openHandleDatabase() {
         return new Promise((resolve, reject) => {
             const request = indexedDB.open(HANDLE_DB, 1);
@@ -864,7 +868,6 @@
             log('ERRO: informe uma query ou uma lista de tickets.');
             return;
         }
-        if (query) localStorage.setItem(QUERY_KEY, query);
         const progressKey = ticketIds.length ? ticketListKey(ticketIds) : query;
         const sourceLabel = ticketIds.length
             ? `Lista direta com ${ticketIds.length} ticket(s)`
@@ -966,6 +969,7 @@
     function setRunningUi(isRunning) {
         document.querySelector('#attus-zdexp-start').disabled = isRunning;
         document.querySelector('#attus-zdexp-reset').disabled = isRunning;
+        document.querySelector('#attus-zdexp-clear-all').disabled = isRunning;
         document.querySelector('#attus-zdexp-select-folder').disabled = isRunning;
         document.querySelector('#attus-zdexp-query').disabled = isRunning;
         document.querySelector('#attus-zdexp-ticket-list').disabled = isRunning;
@@ -979,7 +983,6 @@
         openButton.id = 'attus-zdexp-open';
         openButton.type = 'button';
         openButton.textContent = 'Extrator de Tickets';
-        const lastQuery = localStorage.getItem(QUERY_KEY) || DEFAULT_SEARCH_QUERY;
 
         const panel = document.createElement('section');
         panel.id = 'attus-zdexp-panel';
@@ -990,7 +993,7 @@
             <p>Gera PDFs pesquisáveis usando uma query ou uma lista direta de tickets.</p>
             <div class="attus-zdexp-grid">
                 <label>Query da coleta (opcional quando houver lista)
-                    <textarea id="attus-zdexp-query" spellcheck="false">${escapeHtml(lastQuery)}</textarea>
+                    <textarea id="attus-zdexp-query" spellcheck="false"></textarea>
                 </label>
                 <label>Tickets específicos (IDs ou URLs, um por linha)
                     <textarea id="attus-zdexp-ticket-list" spellcheck="false" placeholder="151088&#10;151089&#10;https://attus-ai.zendesk.com/agent/tickets/151090"></textarea>
@@ -1011,6 +1014,7 @@
                 <button id="attus-zdexp-start" class="primary" type="button">Iniciar exportação</button>
                 <button id="attus-zdexp-cancel" class="danger" type="button" disabled>Cancelar</button>
                 <button id="attus-zdexp-reset" type="button">Apagar progresso desta query</button>
+                <button id="attus-zdexp-clear-all" class="danger" type="button">Limpar tudo</button>
             </div>
             <pre id="attus-zdexp-status">Pronto. Recomenda-se testar primeiro com limite 1.</pre>
         `;
@@ -1055,6 +1059,9 @@
                 return;
             }
             if (window.confirm('Apagar o progresso salvo desta extração?')) clearState(progressKey);
+        });
+        panel.querySelector('#attus-zdexp-clear-all').addEventListener('click', () => {
+            clearEverything(panel);
         });
         restoreDirectoryHandle();
     }
