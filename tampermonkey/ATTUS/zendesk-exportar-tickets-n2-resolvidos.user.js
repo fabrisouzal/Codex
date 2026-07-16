@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk - Extrator de Tickets
 // @namespace    https://attus-ai.zendesk.com/
-// @version      2026.07.16.07
+// @version      2026.07.16.08
 // @description  Exporta tickets de uma busca editável do Zendesk em PDFs pesquisáveis, gravados diretamente em uma pasta escolhida.
 // @author       ATTUS
 // @match        https://attus-ai.zendesk.com/agent/*
@@ -35,14 +35,14 @@
 
     GM_addStyle(`
         #attus-zdexp-open {
-            position: fixed; right: 476px; top: 7px; z-index: 2147483646;
+            position: fixed; right: 676px; top: 7px; z-index: 2147483646;
             border: 0; border-radius: 6px; padding: 9px 13px;
             background: #174ea6; color: #fff; font: 600 13px/1 Arial, sans-serif;
             box-shadow: 0 5px 18px rgba(0,0,0,.28); cursor: pointer;
         }
         #attus-zdexp-open:hover { background: #123d82; }
         #attus-zdexp-panel {
-            position: fixed; right: 418px; top: 50px; z-index: 2147483647;
+            position: fixed; right: 618px; top: 50px; z-index: 2147483647;
             width: 460px; height: min(650px, calc(100vh - 68px));
             min-width: 330px; min-height: 300px;
             max-width: calc(100vw - 36px); max-height: calc(100vh - 68px);
