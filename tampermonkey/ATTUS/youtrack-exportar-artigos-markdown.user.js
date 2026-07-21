@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTrack ATT - Exportar Artigos em Markdown
 // @namespace    https://youtrack.attus.ai/
-// @version      2026.07.21.01
+// @version      2026.07.21.02
 // @description  Exporta todos os artigos acessiveis de um projeto do YouTrack para arquivos Markdown e baixa seus anexos.
 // @author       ATTUS
 // @match        https://youtrack.attus.ai/articles/*
@@ -22,6 +22,7 @@
 
     let running = false;
     let cancelRequested = false;
+    let activeToken = '';
 
     GM_addStyle(`
         #attus-ytmd-open {
@@ -48,8 +49,10 @@
         #attus-ytmd-panel label.field {
             display: flex; flex-direction: column; gap: 4px; margin-top: 12px; font-weight: 600;
         }
-        #attus-ytmd-project {
+        #attus-ytmd-project, #attus-ytmd-token {
             padding: 8px; border: 1px solid #aebdca; border-radius: 5px; font: inherit;
+        }
+        #attus-ytmd-project {
             text-transform: uppercase;
         }
         .attus-ytmd-check { display: flex; align-items: center; gap: 7px; margin: 10px 0; }
@@ -87,6 +90,10 @@
 
     function normalizeProject(value) {
         return String(value || '').trim().toUpperCase();
+    }
+
+    function normalizeToken(value) {
+        return String(value || '').trim().replace(/^Bearer\s+/i, '');
     }
 
     function sanitizeName(value, maxLength = 120) {
@@ -133,11 +140,17 @@
         const response = await fetch(url, {
             method: 'GET',
             credentials: 'include',
-            headers: { Accept: 'application/json' },
+            headers: {
+                Accept: 'application/json',
+                Authorization: `Bearer ${activeToken}`,
+            },
         });
 
-        if (response.status === 401 || response.status === 403) {
-            throw new Error(`Acesso negado pela API (${response.status}). Confirme que voce esta conectado ao YouTrack e possui permissao de leitura.`);
+        if (response.status === 401) {
+            throw new Error('Token recusado pela API (401). Gere um token permanente com o escopo YouTrack e tente novamente.');
+        }
+        if (response.status === 403) {
+            throw new Error('A API recusou a operacao (403). Confirme que o token possui o escopo YouTrack e que sua conta pode ler os artigos.');
         }
         if (!response.ok) {
             const detail = (await response.text()).slice(0, 500);
@@ -155,10 +168,10 @@
         const seenIds = new Set();
         let skip = 0;
 
-        log(`Lendo os artigos do projeto ${projectShortName}...`);
+        log('Lendo a lista completa de artigos acessiveis...');
         while (all.length < MAX_ARTICLES) {
             checkCancelled();
-            const page = await apiGet(`/api/admin/projects/${encodeURIComponent(projectShortName)}/articles`, {
+            const page = await apiGet('/api/articles', {
                 fields,
                 '$top': PAGE_SIZE,
                 '$skip': skip,
@@ -176,7 +189,7 @@
             if (newItems === 0) throw new Error('A paginacao da API repetiu a mesma pagina e foi interrompida por seguranca.');
 
             skip += page.length;
-            log(`${all.length} artigos do projeto recebidos...`);
+            log(`${all.length} artigos acessiveis examinados...`);
             await sleep(REQUEST_DELAY_MS);
         }
 
@@ -184,8 +197,7 @@
             throw new Error(`O limite de seguranca de ${MAX_ARTICLES} artigos foi atingido.`);
         }
 
-        const filtered = all.filter((article) => !article.project?.shortName
-            || normalizeProject(article.project.shortName) === projectShortName);
+        const filtered = all.filter((article) => normalizeProject(article.project?.shortName) === projectShortName);
         log(`${filtered.length} artigos encontrados no projeto ${projectShortName}.`);
         return filtered;
     }
@@ -333,7 +345,10 @@
 
     async function downloadAttachment(article, attachment, destinationDirectory) {
         const url = new URL(attachment.url, location.origin);
-        const response = await fetch(url, { credentials: 'include' });
+        const response = await fetch(url, {
+            credentials: 'include',
+            headers: { Authorization: `Bearer ${activeToken}` },
+        });
         if (!response.ok) throw new Error(`HTTP ${response.status} ao baixar ${attachment.name}`);
         await writeFile(destinationDirectory, attachmentFileName(article, attachment), await response.blob());
     }
@@ -346,9 +361,14 @@
         }
 
         const project = normalizeProject(document.getElementById('attus-ytmd-project').value);
+        const token = normalizeToken(document.getElementById('attus-ytmd-token').value);
         const includeAttachments = document.getElementById('attus-ytmd-attachments').checked;
         if (!project) {
             alert('Informe a sigla do projeto, por exemplo ATT.');
+            return;
+        }
+        if (!token) {
+            alert('Informe um token permanente do YouTrack com o escopo YouTrack.\n\nAbra seu Perfil > Seguranca da conta > Tokens > Novo token.');
             return;
         }
 
@@ -362,6 +382,7 @@
 
         running = true;
         cancelRequested = false;
+        activeToken = token;
         setRunningUi(true);
         document.getElementById('attus-ytmd-status').textContent = '';
 
@@ -440,6 +461,8 @@
                 alert(`A exportacao falhou:\n\n${error?.message || error}`);
             }
         } finally {
+            activeToken = '';
+            document.getElementById('attus-ytmd-token').value = '';
             running = false;
             setRunningUi(false);
         }
@@ -448,6 +471,7 @@
     function setRunningUi(isRunning) {
         document.getElementById('attus-ytmd-start').disabled = isRunning;
         document.getElementById('attus-ytmd-project').disabled = isRunning;
+        document.getElementById('attus-ytmd-token').disabled = isRunning;
         document.getElementById('attus-ytmd-attachments').disabled = isRunning;
         document.getElementById('attus-ytmd-cancel').disabled = !isRunning;
     }
@@ -471,11 +495,15 @@
                 Sigla do projeto
                 <input id="attus-ytmd-project" type="text" value="${DEFAULT_PROJECT}" maxlength="30" autocomplete="off">
             </label>
+            <label class="field">
+                Token permanente do YouTrack
+                <input id="attus-ytmd-token" type="password" placeholder="perm:..." autocomplete="new-password" spellcheck="false">
+            </label>
             <label class="attus-ytmd-check">
                 <input id="attus-ytmd-attachments" type="checkbox" checked>
                 Baixar anexos e ajustar os links no Markdown
             </label>
-            <p class="attus-ytmd-note">A exportacao usa a sessao desta aba. Somente artigos que a sua conta consegue ler serao salvos.</p>
+            <p class="attus-ytmd-note">Crie o token em Perfil &gt; Seguranca da conta &gt; Tokens, com o escopo YouTrack. O token nao e salvo e e removido da memoria ao terminar.</p>
             <div class="attus-ytmd-actions">
                 <button id="attus-ytmd-start" class="primary" type="button">Escolher pasta e exportar</button>
                 <button id="attus-ytmd-cancel" class="danger" type="button" disabled>Cancelar</button>
