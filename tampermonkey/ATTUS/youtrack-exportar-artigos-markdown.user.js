@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTrack ATT - Exportar Artigos
 // @namespace    https://youtrack.attus.ai/
-// @version      2026.07.29.02
-// @description  Exporta todos os artigos acessiveis de um projeto do YouTrack para arquivos Markdown ou PDF e baixa seus anexos.
+// @version      2026.07.30.01
+// @description  Exporta artigos do YouTrack para Markdown otimizado para busca vetorial ou PDF pesquisavel, com anexos.
 // @author       ATTUS
 // @match        https://youtrack.attus.ai/articles/*
 // @updateURL    https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/youtrack-exportar-artigos-markdown.user.js
@@ -174,6 +174,13 @@
         return JSON.stringify(value == null ? '' : String(value));
     }
 
+    function yamlStringArray(values) {
+        return JSON.stringify(
+            [...new Set((values || []).map((value) => String(value || '').trim()).filter(Boolean))]
+                .sort((a, b) => a.localeCompare(b, 'pt-BR')),
+        );
+    }
+
     function isoDate(timestamp) {
         if (!timestamp) return '';
         const date = new Date(timestamp);
@@ -225,6 +232,7 @@
         const fields = [
             'id', 'idReadable', 'summary', 'content', 'created', 'updated', 'ordinal',
             'hasChildren', 'project(id,shortName)', 'parentArticle(id,idReadable)',
+            'tags(id,name)',
         ].join(',');
         const all = [];
         const seenIds = new Set();
@@ -314,28 +322,63 @@
         return output;
     }
 
-    function buildArticleMarkdown(article, attachments, fileNameById, downloadAttachments) {
+    function buildArticleBreadcrumb(article, articleById) {
+        const ancestors = [];
+        const visited = new Set();
+        let current = article;
+
+        while (current && !visited.has(current.id)) {
+            visited.add(current.id);
+            ancestors.push(`${current.idReadable} - ${current.summary || 'Sem titulo'}`);
+            current = current.parentArticle?.id ? articleById.get(current.parentArticle.id) : null;
+        }
+        return ancestors.reverse().join(' > ');
+    }
+
+    function buildArticleMarkdown(article, attachments, fileNameById, articleById, downloadAttachments) {
         const parent = article.parentArticle;
         const parentFile = parent?.id ? fileNameById.get(parent.id) : null;
         const assetPath = `../assets/${sanitizeName(article.idReadable, 60)}`;
+        const project = article.project?.shortName || '';
+        const title = article.summary || 'Sem titulo';
+        const breadcrumb = buildArticleBreadcrumb(article, articleById);
+        const tags = [
+            ...(article.tags || []).map((tag) => tag?.name).filter(Boolean),
+            project ? `projeto:${project}` : '',
+            parent?.idReadable ? `artigo-pai:${parent.idReadable}` : 'artigo-raiz',
+        ].filter(Boolean);
         const content = downloadAttachments
             ? replaceAttachmentUrls(article.content, attachments, article, assetPath)
             : String(article.content || '');
 
         const lines = [
             '---',
+            'schema_version: 1',
+            `document_id: ${escapeYaml(article.idReadable)}`,
+            'source_type: "youtrack_article"',
+            `assunto: ${escapeYaml(title)}`,
+            'idioma: "pt-BR"',
+            `grupo: ${escapeYaml(`YouTrack / ${project}`)}`,
+            `tags: ${yamlStringArray(tags)}`,
+            `atualizado_em: ${escapeYaml(isoDate(article.updated))}`,
+            `fonte: ${escapeYaml(articleUrl(article))}`,
+            'access_scope: "internal"',
+            'inclui_notas_internas: false',
+            `exportado_em: ${escapeYaml(new Date().toISOString())}`,
             `id: ${escapeYaml(article.idReadable)}`,
-            `titulo: ${escapeYaml(article.summary || 'Sem titulo')}`,
-            `projeto: ${escapeYaml(article.project?.shortName || '')}`,
+            `titulo: ${escapeYaml(title)}`,
+            `projeto: ${escapeYaml(project)}`,
             `origem: ${escapeYaml(articleUrl(article))}`,
             `criado_em: ${escapeYaml(isoDate(article.created))}`,
-            `atualizado_em: ${escapeYaml(isoDate(article.updated))}`,
             `artigo_pai: ${escapeYaml(parent?.idReadable || '')}`,
+            `caminho_hierarquico: ${escapeYaml(breadcrumb)}`,
             '---',
             '',
-            `# ${article.summary || article.idReadable}`,
+            `# ${title}`,
             '',
             `[Abrir no YouTrack](${articleUrl(article)})`,
+            '',
+            `> Contexto: projeto ${project}; caminho ${breadcrumb}.`,
         ];
 
         if (parentFile) lines.push('', `Artigo pai: [${parent.idReadable}](${markdownHref(parentFile)})`);
@@ -710,6 +753,7 @@
             }
 
             const sortedArticles = [...articles].sort(sortArticles);
+            const articleById = new Map(articles.map((article) => [article.id, article]));
             const manifest = new Array(sortedArticles.length);
             let completed = 0;
             let failedAttachments = 0;
@@ -720,7 +764,7 @@
                 const fileName = fileNameById.get(article.id);
                 const articleFile = exportFormat === 'pdf'
                     ? renderArticlePdfBlob(article, attachments, includeAttachments)
-                    : buildArticleMarkdown(article, attachments, fileNameById, includeAttachments);
+                    : buildArticleMarkdown(article, attachments, fileNameById, articleById, includeAttachments);
                 await writeFile(articlesDirectory, fileName, articleFile);
 
                 if (includeAttachments && attachments.length) {
@@ -746,6 +790,8 @@
                     format: exportFormat,
                     attachments: attachments.length,
                     updated: isoDate(article.updated),
+                    tags: (article.tags || []).map((tag) => tag?.name).filter(Boolean),
+                    breadcrumb: buildArticleBreadcrumb(article, articleById),
                 };
                 completed += 1;
                 log(`${completed}/${articles.length} - ${article.idReadable} salvo.`);
@@ -760,6 +806,8 @@
                 source: `${location.origin}/articles/${encodeURIComponent(project)}`,
                 articleCount: articles.length,
                 workers: workerCount,
+                markdownSchemaVersion: exportFormat === 'md' ? 1 : null,
+                vectorReady: exportFormat === 'md',
                 articles: manifest.filter(Boolean),
             }, null, 2));
 
@@ -806,7 +854,7 @@
         panel.innerHTML = `
             <button id="attus-ytmd-close" type="button" title="Fechar">&times;</button>
             <h2>Exportar artigos do YouTrack</h2>
-            <p>Salva todos os artigos acessiveis do projeto em Markdown ou PDF, com indice e manifesto.</p>
+            <p>Salva todos os artigos acessiveis do projeto em Markdown otimizado para busca vetorial ou PDF pesquisavel.</p>
             <label class="field">
                 Sigla do projeto
                 <input id="attus-ytmd-project" type="text" value="${DEFAULT_PROJECT}" maxlength="30" autocomplete="off">
@@ -830,7 +878,7 @@
                 <input id="attus-ytmd-attachments" type="checkbox" checked>
                 Baixar anexos e ajustar as referencias
             </label>
-            <p class="attus-ytmd-note">Use 4 trabalhadores como padrao. Valores maiores aceleram rede e anexos, mas podem sofrer limitacao do servidor. O PDF mantem texto pesquisavel, titulos, listas, links e blocos de codigo. O token nao e salvo e e removido da memoria ao terminar.</p>
+            <p class="attus-ytmd-note">O Markdown inclui ID estavel, tipo da fonte, idioma, escopo, tags, datas e caminho hierarquico em frontmatter compativel com o indexador ATTUS. Use 4 trabalhadores como padrao; valores maiores podem sofrer limitacao do servidor. O token nao e salvo e e removido da memoria ao terminar.</p>
             <div class="attus-ytmd-actions">
                 <button id="attus-ytmd-start" class="primary" type="button">Escolher pasta e exportar</button>
                 <button id="attus-ytmd-cancel" class="danger" type="button" disabled>Cancelar</button>
