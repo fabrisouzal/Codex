@@ -1,12 +1,13 @@
 // ==UserScript==
-// @name         YouTrack ATT - Exportar Artigos em Markdown
+// @name         YouTrack ATT - Exportar Artigos
 // @namespace    https://youtrack.attus.ai/
-// @version      2026.07.21.02
-// @description  Exporta todos os artigos acessiveis de um projeto do YouTrack para arquivos Markdown e baixa seus anexos.
+// @version      2026.07.29.01
+// @description  Exporta todos os artigos acessiveis de um projeto do YouTrack para arquivos Markdown ou PDF e baixa seus anexos.
 // @author       ATTUS
 // @match        https://youtrack.attus.ai/articles/*
 // @updateURL    https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/youtrack-exportar-artigos-markdown.user.js
 // @downloadURL  https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/youtrack-exportar-artigos-markdown.user.js
+// @require      https://cdn.jsdelivr.net/npm/jspdf@3.0.1/dist/jspdf.umd.min.js
 // @grant        GM_addStyle
 // @run-at       document-idle
 // @noframes
@@ -49,8 +50,9 @@
         #attus-ytmd-panel label.field {
             display: flex; flex-direction: column; gap: 4px; margin-top: 12px; font-weight: 600;
         }
-        #attus-ytmd-project, #attus-ytmd-token {
+        #attus-ytmd-project, #attus-ytmd-token, #attus-ytmd-format {
             padding: 8px; border: 1px solid #aebdca; border-radius: 5px; font: inherit;
+            background: #fff; color: #172b4d;
         }
         #attus-ytmd-project {
             text-transform: uppercase;
@@ -294,6 +296,238 @@
         return `${lines.join('\n').replace(/\n{4,}/g, '\n\n\n')}\n`;
     }
 
+    function toPdfText(value) {
+        return String(value ?? '')
+            .replace(/\u00a0/g, ' ')
+            .replace(/[\u2010-\u2015]/g, '-')
+            .replace(/[\u2018\u2019]/g, "'")
+            .replace(/[\u201c\u201d]/g, '"')
+            .replace(/\u2022/g, '-')
+            .replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\xFF]/g, '?');
+    }
+
+    function markdownInlineToText(value) {
+        return toPdfText(String(value || '')
+            .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_match, alt, url) => `Imagem: ${alt || 'sem descricao'} (${url})`)
+            .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, url) => `${label} (${url})`)
+            .replace(/<((?:https?:\/\/|mailto:)[^>]+)>/g, '$1')
+            .replace(/<br\s*\/?>/gi, ' ')
+            .replace(/<\/?[^>]+>/g, '')
+            .replace(/`([^`]+)`/g, '$1')
+            .replace(/(\*\*|__)(.*?)\1/g, '$2')
+            .replace(/(\*|_)(.*?)\1/g, '$2')
+            .replace(/~~(.*?)~~/g, '$1')
+            .replace(/\\([\\`*_[\]{}()#+\-.!>])/g, '$1'));
+    }
+
+    function renderArticlePdfBlob(article, attachments, downloadAttachments) {
+        const JsPdf = window.jspdf?.jsPDF || window.jsPDF;
+        if (typeof JsPdf !== 'function') {
+            throw new Error('A biblioteca jsPDF nao foi carregada. Recarregue a pagina e tente novamente.');
+        }
+
+        const title = article.summary || article.idReadable;
+        const sourceUrl = articleUrl(article);
+        const assetPath = `../assets/${sanitizeName(article.idReadable, 60)}`;
+        const content = downloadAttachments
+            ? replaceAttachmentUrls(article.content, attachments, article, assetPath)
+            : String(article.content || '');
+        const doc = new JsPdf({ unit: 'mm', format: 'a4', orientation: 'portrait', compress: true });
+        doc.setProperties({
+            title: toPdfText(`${article.idReadable} - ${title}`),
+            subject: toPdfText('Artigo exportado da base de conhecimento do YouTrack'),
+            author: 'YouTrack ATT - Exportador de Artigos',
+        });
+
+        const pageWidth = doc.internal.pageSize.getWidth();
+        const pageHeight = doc.internal.pageSize.getHeight();
+        const margin = { top: 14, right: 14, bottom: 17, left: 14 };
+        const contentWidth = pageWidth - margin.left - margin.right;
+        let y = margin.top;
+
+        const addPage = () => {
+            doc.addPage();
+            y = margin.top;
+        };
+        const ensureSpace = (height) => {
+            if (y + height > pageHeight - margin.bottom) addPage();
+        };
+        const wrappedLines = (text, size, width = contentWidth) => {
+            doc.setFontSize(size);
+            return doc.splitTextToSize(toPdfText(text) || '-', width);
+        };
+        const writeWrapped = (text, {
+            size = 10,
+            style = 'normal',
+            font = 'helvetica',
+            color = [23, 43, 77],
+            indent = 0,
+            after = 1.5,
+            lineHeight = size * 0.43,
+        } = {}) => {
+            doc.setFont(font, style);
+            doc.setFontSize(size);
+            doc.setTextColor(...color);
+            const lines = wrappedLines(text, size, contentWidth - indent);
+            for (const line of lines) {
+                ensureSpace(lineHeight);
+                doc.text(line, margin.left + indent, y);
+                y += lineHeight;
+            }
+            y += after;
+        };
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(82, 96, 109);
+        doc.text(toPdfText(article.idReadable), margin.left, y);
+        y += 7;
+        writeWrapped(title, {
+            size: 18,
+            style: 'bold',
+            color: [16, 42, 67],
+            after: 4,
+            lineHeight: 7.8,
+        });
+
+        const metadata = [
+            `Projeto: ${article.project?.shortName || ''}`,
+            `Criado em: ${isoDate(article.created) || 'Nao informado'}`,
+            `Atualizado em: ${isoDate(article.updated) || 'Nao informado'}`,
+            `Artigo pai: ${article.parentArticle?.idReadable || 'Nenhum'}`,
+            `Fonte: ${sourceUrl}`,
+        ];
+        const metadataLines = metadata.flatMap((item) => wrappedLines(item, 9.2, contentWidth - 8));
+        const metadataHeight = metadataLines.length * 4.1 + 6;
+        ensureSpace(metadataHeight);
+        doc.setFillColor(245, 248, 251);
+        doc.rect(margin.left, y, contentWidth, metadataHeight, 'F');
+        doc.setFillColor(47, 111, 173);
+        doc.rect(margin.left, y, 1.5, metadataHeight, 'F');
+        y += 4.5;
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9.2);
+        doc.setTextColor(23, 43, 77);
+        for (const line of metadataLines) {
+            doc.text(line, margin.left + 4, y);
+            y += 4.1;
+        }
+        y += 5;
+
+        writeWrapped('Conteudo', {
+            size: 14,
+            style: 'bold',
+            color: [22, 50, 79],
+            after: 3,
+            lineHeight: 6.2,
+        });
+
+        let inCodeBlock = false;
+        for (const rawLine of content.replace(/\r\n?/g, '\n').split('\n')) {
+            const trimmed = rawLine.trim();
+            const fence = trimmed.match(/^```(.*)$/);
+            if (fence) {
+                inCodeBlock = !inCodeBlock;
+                if (inCodeBlock && fence[1].trim()) {
+                    writeWrapped(`Codigo: ${fence[1].trim()}`, {
+                        size: 8.2, style: 'bold', font: 'courier', color: [82, 96, 109], after: 1,
+                    });
+                }
+                continue;
+            }
+            if (!trimmed) {
+                y += 2;
+                continue;
+            }
+            if (inCodeBlock) {
+                writeWrapped(rawLine || ' ', {
+                    size: 8.4, font: 'courier', color: [38, 50, 56], indent: 2, after: 0.6, lineHeight: 3.7,
+                });
+                continue;
+            }
+
+            const heading = trimmed.match(/^(#{1,6})\s+(.+)$/);
+            if (heading) {
+                const level = heading[1].length;
+                const sizes = [16, 14, 12.5, 11.5, 10.5, 10];
+                writeWrapped(markdownInlineToText(heading[2]), {
+                    size: sizes[level - 1],
+                    style: 'bold',
+                    color: [22, 50, 79],
+                    after: 2,
+                    lineHeight: sizes[level - 1] * 0.46,
+                });
+                continue;
+            }
+            if (/^([-*_])(?:\s*\1){2,}$/.test(trimmed)) {
+                ensureSpace(4);
+                doc.setDrawColor(216, 224, 232);
+                doc.line(margin.left, y, pageWidth - margin.right, y);
+                y += 4;
+                continue;
+            }
+
+            const checkbox = trimmed.match(/^[-*+]\s+\[([ xX])\]\s+(.+)$/);
+            const bullet = trimmed.match(/^[-*+]\s+(.+)$/);
+            const numbered = trimmed.match(/^(\d+[.)])\s+(.+)$/);
+            const quote = trimmed.match(/^>\s?(.*)$/);
+            if (checkbox) {
+                writeWrapped(`[${checkbox[1].trim() ? 'x' : ' '}] ${markdownInlineToText(checkbox[2])}`, {
+                    indent: 4, after: 0.8, lineHeight: 4.3,
+                });
+            } else if (bullet) {
+                writeWrapped(`- ${markdownInlineToText(bullet[1])}`, {
+                    indent: 4, after: 0.8, lineHeight: 4.3,
+                });
+            } else if (numbered) {
+                writeWrapped(`${numbered[1]} ${markdownInlineToText(numbered[2])}`, {
+                    indent: 4, after: 0.8, lineHeight: 4.3,
+                });
+            } else if (quote) {
+                writeWrapped(markdownInlineToText(quote[1]), {
+                    style: 'italic', color: [82, 96, 109], indent: 5, after: 1.2, lineHeight: 4.3,
+                });
+            } else {
+                writeWrapped(markdownInlineToText(trimmed), {
+                    after: 1.2, lineHeight: 4.4,
+                });
+            }
+        }
+
+        if (attachments.length) {
+            y += 3;
+            writeWrapped('Anexos', {
+                size: 13,
+                style: 'bold',
+                color: [22, 50, 79],
+                after: 2,
+                lineHeight: 5.8,
+            });
+            for (const attachment of attachments) {
+                const href = downloadAttachments
+                    ? `${assetPath}/${attachmentFileName(article, attachment)}`
+                    : new URL(attachment.url, location.origin).href;
+                const size = attachment.size ? ` (${Math.ceil(attachment.size / 1024)} KB)` : '';
+                writeWrapped(`- ${attachment.name || attachment.id}${size}: ${href}`, {
+                    size: 8.5, color: [18, 89, 167], indent: 2, after: 0.7, lineHeight: 3.8,
+                });
+            }
+        }
+
+        const totalPages = doc.getNumberOfPages();
+        for (let pageNumber = 1; pageNumber <= totalPages; pageNumber += 1) {
+            doc.setPage(pageNumber);
+            doc.setDrawColor(216, 224, 232);
+            doc.line(margin.left, pageHeight - 11, pageWidth - margin.right, pageHeight - 11);
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(8);
+            doc.setTextColor(82, 96, 109);
+            doc.text(toPdfText(article.idReadable), margin.left, pageHeight - 6.5);
+            doc.text(`Pagina ${pageNumber} de ${totalPages}`, pageWidth - margin.right, pageHeight - 6.5, { align: 'right' });
+        }
+        return doc.output('blob');
+    }
+
     function sortArticles(a, b) {
         const ordinalA = Number.isFinite(a.ordinal) ? a.ordinal : Number.MAX_SAFE_INTEGER;
         const ordinalB = Number.isFinite(b.ordinal) ? b.ordinal : Number.MAX_SAFE_INTEGER;
@@ -302,7 +536,7 @@
             || String(a.idReadable || '').localeCompare(String(b.idReadable || ''), 'pt-BR');
     }
 
-    function buildIndex(projectShortName, articles, fileNameById) {
+    function buildIndex(projectShortName, articles, fileNameById, formatLabel) {
         const articleById = new Map(articles.map((article) => [article.id, article]));
         const children = new Map();
         const roots = [];
@@ -321,6 +555,8 @@
             `# Artigos do YouTrack - ${projectShortName}`,
             '',
             `Exportado em: ${new Date().toLocaleString('pt-BR')}`,
+            '',
+            `Formato dos artigos: ${formatLabel}`,
             '',
             `Total de artigos: ${articles.length}`,
             '',
@@ -362,6 +598,8 @@
 
         const project = normalizeProject(document.getElementById('attus-ytmd-project').value);
         const token = normalizeToken(document.getElementById('attus-ytmd-token').value);
+        const exportFormat = document.getElementById('attus-ytmd-format').value === 'pdf' ? 'pdf' : 'md';
+        const formatLabel = exportFormat === 'pdf' ? 'PDF' : 'Markdown';
         const includeAttachments = document.getElementById('attus-ytmd-attachments').checked;
         if (!project) {
             alert('Informe a sigla do projeto, por exemplo ATT.');
@@ -369,6 +607,10 @@
         }
         if (!token) {
             alert('Informe um token permanente do YouTrack com o escopo YouTrack.\n\nAbra seu Perfil > Seguranca da conta > Tokens > Novo token.');
+            return;
+        }
+        if (exportFormat === 'pdf' && typeof (window.jspdf?.jsPDF || window.jsPDF) !== 'function') {
+            alert('A biblioteca de PDF nao foi carregada. Recarregue a pagina do YouTrack e tente novamente.');
             return;
         }
 
@@ -387,18 +629,22 @@
         document.getElementById('attus-ytmd-status').textContent = '';
 
         try {
-            log(`Exportacao do projeto ${project} iniciada.`);
+            log(`Exportacao do projeto ${project} em ${formatLabel} iniciada.`);
             const articles = await fetchAllArticles(project);
             if (articles.length === 0) {
                 throw new Error(`Nenhum artigo acessivel foi encontrado no projeto ${project}.`);
             }
 
-            const exportRoot = await getSubdirectory(selectedDirectory, `YouTrack-${project}-Markdown`);
+            const outputFolderName = `YouTrack-${project}-${formatLabel}`;
+            const exportRoot = await getSubdirectory(selectedDirectory, outputFolderName);
             const articlesDirectory = await getSubdirectory(exportRoot, 'articles');
             const assetsDirectory = includeAttachments ? await getSubdirectory(exportRoot, 'assets') : null;
             const fileNameById = new Map();
             for (const article of articles) {
-                fileNameById.set(article.id, `${sanitizeName(`${article.idReadable} - ${article.summary || 'Sem titulo'}`, 150)}.md`);
+                fileNameById.set(
+                    article.id,
+                    `${sanitizeName(`${article.idReadable} - ${article.summary || 'Sem titulo'}`, 150)}.${exportFormat}`,
+                );
             }
 
             const manifest = [];
@@ -409,8 +655,10 @@
                 checkCancelled();
                 const attachments = await fetchAttachments(article);
                 const fileName = fileNameById.get(article.id);
-                const markdown = buildArticleMarkdown(article, attachments, fileNameById, includeAttachments);
-                await writeFile(articlesDirectory, fileName, markdown);
+                const articleFile = exportFormat === 'pdf'
+                    ? renderArticlePdfBlob(article, attachments, includeAttachments)
+                    : buildArticleMarkdown(article, attachments, fileNameById, includeAttachments);
+                await writeFile(articlesDirectory, fileName, articleFile);
 
                 if (includeAttachments && attachments.length) {
                     const articleAssets = await getSubdirectory(assetsDirectory, article.idReadable);
@@ -432,6 +680,7 @@
                     source: articleUrl(article),
                     parent: article.parentArticle?.idReadable || null,
                     file: `articles/${fileName}`,
+                    format: exportFormat,
                     attachments: attachments.length,
                     updated: isoDate(article.updated),
                 });
@@ -440,18 +689,19 @@
                 await sleep(REQUEST_DELAY_MS);
             }
 
-            await writeFile(exportRoot, 'README.md', buildIndex(project, articles, fileNameById));
+            await writeFile(exportRoot, 'README.md', buildIndex(project, articles, fileNameById, formatLabel));
             await writeFile(exportRoot, 'manifest.json', JSON.stringify({
                 project,
+                format: exportFormat,
                 exportedAt: new Date().toISOString(),
                 source: `${location.origin}/articles/${encodeURIComponent(project)}`,
                 articleCount: articles.length,
                 articles: manifest,
             }, null, 2));
 
-            log(`Concluido: ${completed} artigos Markdown salvos.`);
+            log(`Concluido: ${completed} artigos em ${formatLabel} salvos.`);
             if (failedAttachments) log(`${failedAttachments} anexos falharam; os avisos acima indicam quais.`);
-            alert(`Exportacao concluida.\n\n${completed} artigos salvos em YouTrack-${project}-Markdown.`);
+            alert(`Exportacao concluida.\n\n${completed} artigos em ${formatLabel} salvos em ${outputFolderName}.`);
         } catch (error) {
             if (error?.message === 'EXPORT_CANCELLED') {
                 log('Exportacao cancelada pelo usuario. Os arquivos ja gravados foram mantidos.');
@@ -472,6 +722,7 @@
         document.getElementById('attus-ytmd-start').disabled = isRunning;
         document.getElementById('attus-ytmd-project').disabled = isRunning;
         document.getElementById('attus-ytmd-token').disabled = isRunning;
+        document.getElementById('attus-ytmd-format').disabled = isRunning;
         document.getElementById('attus-ytmd-attachments').disabled = isRunning;
         document.getElementById('attus-ytmd-cancel').disabled = !isRunning;
     }
@@ -482,7 +733,7 @@
         const openButton = document.createElement('button');
         openButton.id = 'attus-ytmd-open';
         openButton.type = 'button';
-        openButton.textContent = 'Exportar Markdown';
+        openButton.textContent = 'Exportar artigos';
 
         const panel = document.createElement('section');
         panel.id = 'attus-ytmd-panel';
@@ -490,10 +741,17 @@
         panel.innerHTML = `
             <button id="attus-ytmd-close" type="button" title="Fechar">&times;</button>
             <h2>Exportar artigos do YouTrack</h2>
-            <p>Salva todos os artigos acessiveis do projeto em Markdown, com indice e manifesto.</p>
+            <p>Salva todos os artigos acessiveis do projeto em Markdown ou PDF, com indice e manifesto.</p>
             <label class="field">
                 Sigla do projeto
                 <input id="attus-ytmd-project" type="text" value="${DEFAULT_PROJECT}" maxlength="30" autocomplete="off">
+            </label>
+            <label class="field">
+                Formato dos artigos
+                <select id="attus-ytmd-format">
+                    <option value="md" selected>Markdown (.md)</option>
+                    <option value="pdf">PDF pesquisavel (.pdf)</option>
+                </select>
             </label>
             <label class="field">
                 Token permanente do YouTrack
@@ -501,9 +759,9 @@
             </label>
             <label class="attus-ytmd-check">
                 <input id="attus-ytmd-attachments" type="checkbox" checked>
-                Baixar anexos e ajustar os links no Markdown
+                Baixar anexos e ajustar as referencias
             </label>
-            <p class="attus-ytmd-note">Crie o token em Perfil &gt; Seguranca da conta &gt; Tokens, com o escopo YouTrack. O token nao e salvo e e removido da memoria ao terminar.</p>
+            <p class="attus-ytmd-note">O PDF mantem texto pesquisavel, titulos, listas, links e blocos de codigo. Crie o token em Perfil &gt; Seguranca da conta &gt; Tokens, com o escopo YouTrack. O token nao e salvo e e removido da memoria ao terminar.</p>
             <div class="attus-ytmd-actions">
                 <button id="attus-ytmd-start" class="primary" type="button">Escolher pasta e exportar</button>
                 <button id="attus-ytmd-cancel" class="danger" type="button" disabled>Cancelar</button>
