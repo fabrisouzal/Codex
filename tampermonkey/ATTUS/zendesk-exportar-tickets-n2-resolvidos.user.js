@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk - Extrator de Tickets
 // @namespace    https://attus-ai.zendesk.com/
-// @version      2026.07.30.01
+// @version      2026.07.30.02
 // @description  Exporta tickets do Zendesk em PDF, Markdown ou ambos, com retomada e processamento paralelo controlado.
 // @author       ATTUS
 // @match        https://attus-ai.zendesk.com/agent/*
@@ -792,6 +792,15 @@
             .replace(/\)/g, '%29');
     }
 
+    function commentAuthorRole(comment, ticket) {
+        const authorId = asNumber(comment?.author_id);
+        if (authorId && authorId === asNumber(ticket?.requester_id)) return 'Solicitante';
+        const role = String(userCache.get(authorId)?.role || '').toLowerCase();
+        if (role === 'agent' || role === 'admin') return 'Atendimento';
+        if (role === 'end-user') return 'Usuário final';
+        return 'Participante';
+    }
+
     function renderMarkdownText(documentData, sourceLabel, includePrivate) {
         const { ticket, comments, group, customStatus } = documentData;
         const ticketId = Number(ticket.id);
@@ -800,19 +809,27 @@
         const tags = Array.isArray(ticket.tags) ? ticket.tags : [];
         const lines = [
             '---',
+            'schema_version: 1',
+            `document_id: ${yamlValue(`ZD-TICKET-${ticketId}`)}`,
+            'source_type: "zendesk_ticket"',
+            'idioma: "pt-BR"',
             `ticket_id: ${ticketId}`,
             `assunto: ${yamlValue(subject)}`,
             `status: ${yamlValue(ticket.status)}`,
             `status_personalizado: ${yamlValue(customStatus)}`,
             `custom_status_id: ${yamlValue(ticket.custom_status_id)}`,
             `grupo: ${yamlValue(group)}`,
+            `group_id: ${yamlValue(ticket.group_id)}`,
             `solicitante: ${yamlValue(userLabel(ticket.requester_id))}`,
+            `requester_id: ${yamlValue(ticket.requester_id)}`,
             `responsavel: ${yamlValue(userLabel(ticket.assignee_id))}`,
+            `assignee_id: ${yamlValue(ticket.assignee_id)}`,
             `criado_em: ${yamlValue(ticket.created_at)}`,
             `atualizado_em: ${yamlValue(ticket.updated_at)}`,
             `prioridade: ${yamlValue(ticket.priority)}`,
             `tipo: ${yamlValue(ticket.type)}`,
             `inclui_notas_internas: ${Boolean(includePrivate)}`,
+            `access_scope: ${yamlValue(includePrivate ? 'internal' : 'public')}`,
             `comentarios: ${comments.length}`,
             `tags: [${tags.map(yamlValue).join(', ')}]`,
             `fonte: ${yamlValue(ticketUrl)}`,
@@ -843,14 +860,20 @@
 
         comments.forEach((comment, index) => {
             const visibility = comment.public ? 'Público' : 'Nota interna';
+            const role = commentAuthorRole(comment, ticket);
+            const commentId = asNumber(comment.id);
+            const createdAt = comment.created_at || 'data não informada';
             const sanitized = sanitizeCommentHtml(comment.html_body || comment.plain_body || comment.body || '');
             const body = htmlToNormalizedText(sanitized.html, false, true)
                 || 'Comentário sem conteúdo textual.';
             lines.push(
-                `### ${index + 1}. ${visibility}`,
+                `### Comentário ${String(index + 1).padStart(4, '0')} | ID ${commentId || 'não informado'} | ${role} | ${visibility} | ${markdownInline(createdAt)}`,
                 '',
+                `- **ID do comentário:** ${commentId || 'Não informado'}`,
                 `- **Data:** ${markdownInline(formatDate(comment.created_at))}`,
                 `- **Autor:** ${markdownInline(userLabel(comment.author_id))}`,
+                `- **Papel:** ${markdownInline(role)}`,
+                `- **Visibilidade:** ${markdownInline(visibility)}`,
                 '',
                 body,
                 ''
