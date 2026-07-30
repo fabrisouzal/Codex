@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk - Extrator de Tickets
 // @namespace    https://attus-ai.zendesk.com/
-// @version      2026.07.29.02
+// @version      2026.07.30.01
 // @description  Exporta tickets do Zendesk em PDF, Markdown ou ambos, com retomada e processamento paralelo controlado.
 // @author       ATTUS
 // @match        https://attus-ai.zendesk.com/agent/*
@@ -28,8 +28,8 @@
     const REQUEST_DELAY_MS = 120;
     const MAX_RETRIES = 5;
     const MIN_CONCURRENCY = 1;
-    const MAX_CONCURRENCY = 6;
-    const DEFAULT_CONCURRENCY = 3;
+    const MAX_CONCURRENCY = 8;
+    const DEFAULT_CONCURRENCY = 4;
     const RATE_LIMIT_RESERVE = 10;
 
     const userCache = new Map();
@@ -1520,7 +1520,7 @@
                     </select>
                 </label>
                 <label>Processos simultâneos
-                    <input id="attus-zdexp-concurrency" type="number" min="1" max="6" step="1" value="3">
+                    <input id="attus-zdexp-concurrency" type="number" min="1" max="8" step="1" value="4">
                 </label>
             </div>
             <label class="attus-zdexp-check"><input id="attus-zdexp-private" type="checkbox" checked> Incluir notas internas</label>
