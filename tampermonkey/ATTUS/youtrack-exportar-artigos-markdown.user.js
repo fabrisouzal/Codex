@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTrack ATT - Exportar Artigos
 // @namespace    https://youtrack.attus.ai/
-// @version      2026.07.30.01
-// @description  Exporta artigos do YouTrack para Markdown otimizado para busca vetorial ou PDF pesquisavel, com anexos.
+// @version      2026.07.30.02
+// @description  Exporta simultaneamente artigos de um ou varios projetos do YouTrack para Markdown vetorial ou PDF.
 // @author       ATTUS
 // @match        https://youtrack.attus.ai/articles/*
 // @updateURL    https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/youtrack-exportar-artigos-markdown.user.js
@@ -23,6 +23,7 @@
     const REQUEST_DELAY_MS = 80;
     const MAX_REQUEST_RETRIES = 4;
     const MAX_ARTICLES = 20000;
+    const MAX_PROJECTS = 50;
 
     let running = false;
     let cancelRequested = false;
@@ -58,7 +59,7 @@
             background: #fff; color: #172b4d;
         }
         #attus-ytmd-project {
-            text-transform: uppercase;
+            min-height: 58px; resize: vertical; text-transform: uppercase;
         }
         .attus-ytmd-check { display: flex; align-items: center; gap: 7px; margin: 10px 0; }
         .attus-ytmd-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
@@ -95,6 +96,19 @@
 
     function normalizeProject(value) {
         return String(value || '').trim().toUpperCase();
+    }
+
+    function parseProjectList(value) {
+        const projects = [...new Set(
+            String(value || '')
+                .split(/[\s,;]+/)
+                .map(normalizeProject)
+                .filter(Boolean),
+        )];
+        if (projects.length > MAX_PROJECTS) {
+            throw new Error(`Informe no maximo ${MAX_PROJECTS} projetos por exportacao.`);
+        }
+        return projects;
     }
 
     function normalizeToken(value) {
@@ -228,7 +242,9 @@
         return response.json();
     }
 
-    async function fetchAllArticles(projectShortName) {
+    async function fetchAllArticles(projectShortNames) {
+        const requestedProjects = new Set(projectShortNames);
+        const articlesByProject = new Map(projectShortNames.map((project) => [project, []]));
         const fields = [
             'id', 'idReadable', 'summary', 'content', 'created', 'updated', 'ordinal',
             'hasChildren', 'project(id,shortName)', 'parentArticle(id,idReadable)',
@@ -267,9 +283,14 @@
             throw new Error(`O limite de seguranca de ${MAX_ARTICLES} artigos foi atingido.`);
         }
 
-        const filtered = all.filter((article) => normalizeProject(article.project?.shortName) === projectShortName);
-        log(`${filtered.length} artigos encontrados no projeto ${projectShortName}.`);
-        return filtered;
+        for (const article of all) {
+            const project = normalizeProject(article.project?.shortName);
+            if (requestedProjects.has(project)) articlesByProject.get(project).push(article);
+        }
+        for (const project of projectShortNames) {
+            log(`${articlesByProject.get(project).length} artigos encontrados no projeto ${project}.`);
+        }
+        return articlesByProject;
     }
 
     async function fetchAttachments(article) {
@@ -682,6 +703,32 @@
         return `${lines.join('\n')}\n`;
     }
 
+    function buildMultiProjectIndex(projects, projectContexts, missingProjects, formatLabel) {
+        const lines = [
+            '# Exportacao de artigos do YouTrack',
+            '',
+            `Exportado em: ${new Date().toLocaleString('pt-BR')}`,
+            '',
+            `Formato dos artigos: ${formatLabel}`,
+            '',
+            `Projetos solicitados: ${projects.join(', ')}`,
+            '',
+            '## Projetos exportados',
+            '',
+        ];
+        for (const project of projects) {
+            const context = projectContexts.get(project);
+            if (!context) continue;
+            lines.push(`- [${project} - ${context.articles.length} artigos](${markdownHref(`${context.folderName}/README.md`)})`);
+        }
+        if (missingProjects.length) {
+            lines.push('', '## Projetos sem artigos acessiveis', '');
+            for (const project of missingProjects) lines.push(`- ${project}`);
+        }
+        lines.push('');
+        return `${lines.join('\n')}\n`;
+    }
+
     async function downloadAttachment(article, attachment, destinationDirectory) {
         const url = new URL(attachment.url, location.origin);
         const response = await fetchWithRetry(url, {
@@ -699,15 +746,21 @@
             return;
         }
 
-        const project = normalizeProject(document.getElementById('attus-ytmd-project').value);
+        let projects;
+        try {
+            projects = parseProjectList(document.getElementById('attus-ytmd-project').value);
+        } catch (error) {
+            alert(error.message);
+            return;
+        }
         const token = normalizeToken(document.getElementById('attus-ytmd-token').value);
         const exportFormat = document.getElementById('attus-ytmd-format').value === 'pdf' ? 'pdf' : 'md';
         const formatLabel = exportFormat === 'pdf' ? 'PDF' : 'Markdown';
         const workerCount = normalizeWorkerCount(document.getElementById('attus-ytmd-workers').value);
         document.getElementById('attus-ytmd-workers').value = String(workerCount);
         const includeAttachments = document.getElementById('attus-ytmd-attachments').checked;
-        if (!project) {
-            alert('Informe a sigla do projeto, por exemplo ATT.');
+        if (!projects.length) {
+            alert('Informe uma ou mais siglas de projeto, por exemplo ATT, PRD, INFRA.');
             return;
         }
         if (!token) {
@@ -734,41 +787,78 @@
         document.getElementById('attus-ytmd-status').textContent = '';
 
         try {
-            log(`Exportacao do projeto ${project} em ${formatLabel} iniciada com ${workerCount} trabalhador(es).`);
-            const articles = await fetchAllArticles(project);
-            if (articles.length === 0) {
-                throw new Error(`Nenhum artigo acessivel foi encontrado no projeto ${project}.`);
+            log(`Exportacao de ${projects.length} projeto(s) em ${formatLabel} iniciada com ${workerCount} trabalhador(es): ${projects.join(', ')}.`);
+            const articlesByProject = await fetchAllArticles(projects);
+            const missingProjects = projects.filter((project) => articlesByProject.get(project).length === 0);
+            const foundProjects = projects.filter((project) => articlesByProject.get(project).length > 0);
+            if (!foundProjects.length) {
+                throw new Error(`Nenhum artigo acessivel foi encontrado nos projetos: ${projects.join(', ')}.`);
+            }
+            if (missingProjects.length) log(`Aviso: nenhum artigo acessivel em ${missingProjects.join(', ')}.`);
+
+            const multipleProjects = projects.length > 1;
+            const outputFolderName = multipleProjects
+                ? `YouTrack-Multiplos-${formatLabel}`
+                : `YouTrack-${foundProjects[0]}-${formatLabel}`;
+            const outputRoot = await getSubdirectory(selectedDirectory, outputFolderName);
+            const projectContexts = new Map();
+            const jobs = [];
+
+            for (const project of foundProjects) {
+                const articles = articlesByProject.get(project);
+                const folderName = `YouTrack-${project}-${formatLabel}`;
+                const exportRoot = multipleProjects
+                    ? await getSubdirectory(outputRoot, folderName)
+                    : outputRoot;
+                const articlesDirectory = await getSubdirectory(exportRoot, 'articles');
+                const assetsDirectory = includeAttachments ? await getSubdirectory(exportRoot, 'assets') : null;
+                const fileNameById = new Map();
+                for (const article of articles) {
+                    fileNameById.set(
+                        article.id,
+                        `${sanitizeName(`${article.idReadable} - ${article.summary || 'Sem titulo'}`, 150)}.${exportFormat}`,
+                    );
+                }
+                const sortedArticles = [...articles].sort(sortArticles);
+                const context = {
+                    project,
+                    folderName,
+                    exportRoot,
+                    articlesDirectory,
+                    assetsDirectory,
+                    articles,
+                    articleById: new Map(articles.map((article) => [article.id, article])),
+                    fileNameById,
+                    manifest: new Array(sortedArticles.length),
+                };
+                projectContexts.set(project, context);
+                sortedArticles.forEach((article, articleIndex) => {
+                    jobs.push({ project, article, articleIndex });
+                });
             }
 
-            const outputFolderName = `YouTrack-${project}-${formatLabel}`;
-            const exportRoot = await getSubdirectory(selectedDirectory, outputFolderName);
-            const articlesDirectory = await getSubdirectory(exportRoot, 'articles');
-            const assetsDirectory = includeAttachments ? await getSubdirectory(exportRoot, 'assets') : null;
-            const fileNameById = new Map();
-            for (const article of articles) {
-                fileNameById.set(
-                    article.id,
-                    `${sanitizeName(`${article.idReadable} - ${article.summary || 'Sem titulo'}`, 150)}.${exportFormat}`,
-                );
-            }
-
-            const sortedArticles = [...articles].sort(sortArticles);
-            const articleById = new Map(articles.map((article) => [article.id, article]));
-            const manifest = new Array(sortedArticles.length);
+            const totalArticles = jobs.length;
             let completed = 0;
             let failedAttachments = 0;
 
-            await runWorkerPool(sortedArticles, workerCount, async (article, articleIndex) => {
+            await runWorkerPool(jobs, workerCount, async ({ project, article, articleIndex }) => {
                 checkCancelled();
+                const context = projectContexts.get(project);
                 const attachments = await fetchAttachments(article);
-                const fileName = fileNameById.get(article.id);
+                const fileName = context.fileNameById.get(article.id);
                 const articleFile = exportFormat === 'pdf'
                     ? renderArticlePdfBlob(article, attachments, includeAttachments)
-                    : buildArticleMarkdown(article, attachments, fileNameById, articleById, includeAttachments);
-                await writeFile(articlesDirectory, fileName, articleFile);
+                    : buildArticleMarkdown(
+                        article,
+                        attachments,
+                        context.fileNameById,
+                        context.articleById,
+                        includeAttachments,
+                    );
+                await writeFile(context.articlesDirectory, fileName, articleFile);
 
                 if (includeAttachments && attachments.length) {
-                    const articleAssets = await getSubdirectory(assetsDirectory, article.idReadable);
+                    const articleAssets = await getSubdirectory(context.assetsDirectory, article.idReadable);
                     for (const attachment of attachments) {
                         checkCancelled();
                         try {
@@ -781,7 +871,7 @@
                     }
                 }
 
-                manifest[articleIndex] = {
+                context.manifest[articleIndex] = {
                     id: article.idReadable,
                     title: article.summary || '',
                     source: articleUrl(article),
@@ -791,29 +881,68 @@
                     attachments: attachments.length,
                     updated: isoDate(article.updated),
                     tags: (article.tags || []).map((tag) => tag?.name).filter(Boolean),
-                    breadcrumb: buildArticleBreadcrumb(article, articleById),
+                    breadcrumb: buildArticleBreadcrumb(article, context.articleById),
                 };
                 completed += 1;
-                log(`${completed}/${articles.length} - ${article.idReadable} salvo.`);
+                log(`${completed}/${totalArticles} - ${project} / ${article.idReadable} salvo.`);
                 await sleep(REQUEST_DELAY_MS);
             });
 
-            await writeFile(exportRoot, 'README.md', buildIndex(project, articles, fileNameById, formatLabel));
-            await writeFile(exportRoot, 'manifest.json', JSON.stringify({
-                project,
-                format: exportFormat,
-                exportedAt: new Date().toISOString(),
-                source: `${location.origin}/articles/${encodeURIComponent(project)}`,
-                articleCount: articles.length,
-                workers: workerCount,
-                markdownSchemaVersion: exportFormat === 'md' ? 1 : null,
-                vectorReady: exportFormat === 'md',
-                articles: manifest.filter(Boolean),
-            }, null, 2));
+            const exportedAt = new Date().toISOString();
+            for (const project of foundProjects) {
+                const context = projectContexts.get(project);
+                await writeFile(
+                    context.exportRoot,
+                    'README.md',
+                    buildIndex(project, context.articles, context.fileNameById, formatLabel),
+                );
+                await writeFile(context.exportRoot, 'manifest.json', JSON.stringify({
+                    project,
+                    format: exportFormat,
+                    exportedAt,
+                    source: `${location.origin}/articles/${encodeURIComponent(project)}`,
+                    articleCount: context.articles.length,
+                    workers: workerCount,
+                    markdownSchemaVersion: exportFormat === 'md' ? 1 : null,
+                    vectorReady: exportFormat === 'md',
+                    articles: context.manifest.filter(Boolean),
+                }, null, 2));
+            }
 
-            log(`Concluido: ${completed} artigos em ${formatLabel} salvos.`);
+            if (multipleProjects) {
+                await writeFile(
+                    outputRoot,
+                    'README.md',
+                    buildMultiProjectIndex(projects, projectContexts, missingProjects, formatLabel),
+                );
+                await writeFile(outputRoot, 'manifest.json', JSON.stringify({
+                    projectsRequested: projects,
+                    projectsExported: foundProjects,
+                    projectsWithoutAccessibleArticles: missingProjects,
+                    format: exportFormat,
+                    exportedAt,
+                    articleCount: totalArticles,
+                    workers: workerCount,
+                    simultaneousProjects: true,
+                    markdownSchemaVersion: exportFormat === 'md' ? 1 : null,
+                    vectorReady: exportFormat === 'md',
+                    projects: foundProjects.map((project) => {
+                        const context = projectContexts.get(project);
+                        return {
+                            project,
+                            folder: context.folderName,
+                            articleCount: context.articles.length,
+                        };
+                    }),
+                }, null, 2));
+            }
+
+            log(`Concluido: ${completed} artigos de ${foundProjects.length} projeto(s) em ${formatLabel} salvos.`);
             if (failedAttachments) log(`${failedAttachments} anexos falharam; os avisos acima indicam quais.`);
-            alert(`Exportacao concluida.\n\n${completed} artigos em ${formatLabel} salvos em ${outputFolderName}.`);
+            const missingNotice = missingProjects.length
+                ? `\nSem artigos acessiveis: ${missingProjects.join(', ')}.`
+                : '';
+            alert(`Exportacao concluida.\n\n${completed} artigos de ${foundProjects.length} projeto(s) em ${formatLabel} salvos em ${outputFolderName}.${missingNotice}`);
         } catch (error) {
             if (error?.message === 'EXPORT_CANCELLED') {
                 log('Exportacao cancelada pelo usuario. Os arquivos ja gravados foram mantidos.');
@@ -854,11 +983,12 @@
         panel.innerHTML = `
             <button id="attus-ytmd-close" type="button" title="Fechar">&times;</button>
             <h2>Exportar artigos do YouTrack</h2>
-            <p>Salva todos os artigos acessiveis do projeto em Markdown otimizado para busca vetorial ou PDF pesquisavel.</p>
+            <p>Salva simultaneamente os artigos acessiveis de um ou varios projetos em Markdown vetorial ou PDF.</p>
             <label class="field">
-                Sigla do projeto
-                <input id="attus-ytmd-project" type="text" value="${DEFAULT_PROJECT}" maxlength="30" autocomplete="off">
+                Siglas dos projetos
+                <textarea id="attus-ytmd-project" maxlength="1000" autocomplete="off" spellcheck="false" placeholder="ATT, PRD, INFRA">${DEFAULT_PROJECT}</textarea>
             </label>
+            <p class="attus-ytmd-note">Separe as siglas por virgula, espaco, ponto e virgula ou quebra de linha.</p>
             <label class="field">
                 Formato dos artigos
                 <select id="attus-ytmd-format">
@@ -878,7 +1008,7 @@
                 <input id="attus-ytmd-attachments" type="checkbox" checked>
                 Baixar anexos e ajustar as referencias
             </label>
-            <p class="attus-ytmd-note">O Markdown inclui ID estavel, tipo da fonte, idioma, escopo, tags, datas e caminho hierarquico em frontmatter compativel com o indexador ATTUS. Use 4 trabalhadores como padrao; valores maiores podem sofrer limitacao do servidor. O token nao e salvo e e removido da memoria ao terminar.</p>
+            <p class="attus-ytmd-note">Os trabalhadores processam artigos de todos os projetos em paralelo. Cada projeto recebe pasta, indice e manifesto proprios. O Markdown inclui frontmatter compativel com o indexador ATTUS. Use 4 trabalhadores como padrao; valores maiores podem sofrer limitacao do servidor. O token nao e salvo.</p>
             <div class="attus-ytmd-actions">
                 <button id="attus-ytmd-start" class="primary" type="button">Escolher pasta e exportar</button>
                 <button id="attus-ytmd-cancel" class="danger" type="button" disabled>Cancelar</button>
