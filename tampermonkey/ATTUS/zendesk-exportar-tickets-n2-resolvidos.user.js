@@ -1,13 +1,13 @@
 // ==UserScript==
 // @name         Zendesk - Extrator de Tickets
 // @namespace    https://attus-ai.zendesk.com/
-// @version      2026.07.16.08
+// @version      2026.07.29.01
 // @description  Exporta tickets de uma busca editável do Zendesk em PDFs pesquisáveis, gravados diretamente em uma pasta escolhida.
 // @author       ATTUS
 // @match        https://attus-ai.zendesk.com/agent/*
 // @updateURL    https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/zendesk-exportar-tickets-n2-resolvidos.user.js
 // @downloadURL  https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/zendesk-exportar-tickets-n2-resolvidos.user.js
-// @require      https://cdn.jsdelivr.net/npm/jspdf@3.0.1/dist/jspdf.umd.min.js
+// @require      https://cdn.jsdelivr.net/npm/jspdf@3.0.1/dist/jspdf.umd.min.js#sha256=7ad0aa5df9942f843759f06fcb7f1ff41cf2e6b3feb9a51e048f4c56531f73a2
 // @grant        GM_addStyle
 // @run-at       document-idle
 // @noframes
@@ -20,8 +20,11 @@
     const STATE_PREFIX = 'attus:zendesk:pdf-export:v3:';
     const LEGACY_QUERY_KEY = 'attus:zendesk:pdf-export:last-query:v1';
     const HANDLE_DB = 'attus-zendesk-pdf-export';
+    const HANDLE_DB_VERSION = 2;
     const HANDLE_STORE = 'handles';
     const HANDLE_KEY = 'output-directory';
+    const PROGRESS_STORE = 'progress';
+    const EXPORT_PROFILE_VERSION = 4;
     const REQUEST_DELAY_MS = 120;
     const DOWNLOAD_DELAY_MS = 1200;
     const MAX_RETRIES = 5;
@@ -51,6 +54,10 @@
             box-shadow: 0 12px 36px rgba(0,0,0,.32); resize: both; box-sizing: border-box;
         }
         #attus-zdexp-panel[hidden] { display: none !important; }
+        @media (max-width: 1120px) {
+            #attus-zdexp-open { right: 16px; }
+            #attus-zdexp-panel { right: 18px; }
+        }
         #attus-zdexp-panel h2 { margin: 0 28px 6px 0; font-size: 17px; }
         #attus-zdexp-panel p { margin: 6px 0; }
         #attus-zdexp-close {
@@ -137,21 +144,59 @@
         return url.toString();
     }
 
+    function apiError(message, status, url) {
+        const error = new Error(message);
+        error.httpStatus = status;
+        error.url = url;
+        return error;
+    }
+
+    function isAuthenticationError(error) {
+        return error?.httpStatus === 401 || error?.httpStatus === 403;
+    }
+
+    function validatedApiUrl(value) {
+        const url = new URL(value, BASE);
+        const baseUrl = new URL(BASE);
+        if (url.origin !== baseUrl.origin || !url.pathname.startsWith('/api/v2/')) {
+            throw new Error(`A API retornou uma URL de paginação inesperada: ${url}.`);
+        }
+        return url.toString();
+    }
+
     async function fetchJson(url) {
+        const requestUrl = validatedApiUrl(url);
         let lastError = '';
         for (let attempt = 1; attempt <= MAX_RETRIES; attempt += 1) {
-            const response = await fetch(url, {
-                method: 'GET',
-                credentials: 'include',
-                headers: { Accept: 'application/json' }
-            });
-            if (response.status === 401 || response.status === 403) {
-                throw new Error(`A sessão desta aba não tem acesso à API do Zendesk (HTTP ${response.status}).`);
-            }
-            if (response.status === 429 || response.status >= 500) {
-                const text = await response.text();
-                lastError = `HTTP ${response.status}: ${text.slice(0, 250)}`;
+            let response;
+            try {
+                response = await fetch(requestUrl, {
+                    method: 'GET',
+                    credentials: 'include',
+                    headers: { Accept: 'application/json' }
+                });
+            } catch (error) {
+                lastError = `Falha de rede: ${error.message}`;
                 if (attempt < MAX_RETRIES) {
+                    const seconds = Math.min(2 ** (attempt - 1), 20);
+                    log(`Falha de rede; tentando novamente em ${seconds}s...`);
+                    await sleep(seconds * 1000);
+                    continue;
+                }
+                throw apiError(`A API não pôde ser acessada após ${MAX_RETRIES} tentativas. ${lastError}`, null, requestUrl);
+            }
+            if (response.status === 401 || response.status === 403) {
+                throw apiError(
+                    `A sessão desta aba não tem acesso à API do Zendesk (HTTP ${response.status}).`,
+                    response.status,
+                    requestUrl
+                );
+            }
+            if (!response.ok) {
+                const text = await response.text();
+                const retryable = response.status === 429 || response.status >= 500;
+                lastError = `HTTP ${response.status}: ${text.slice(0, 350)}`;
+                if (retryable && attempt < MAX_RETRIES) {
                     const retryHeader = Number(response.headers.get('retry-after'));
                     const seconds = Number.isFinite(retryHeader)
                         ? Math.max(1, Math.min(retryHeader, 60))
@@ -160,10 +205,7 @@
                     await sleep(seconds * 1000);
                     continue;
                 }
-            }
-            if (!response.ok) {
-                const text = await response.text();
-                throw new Error(`Falha na API: HTTP ${response.status} em ${url}. ${text.slice(0, 350)}`);
+                throw apiError(`Falha na API: ${lastError} em ${requestUrl}.`, response.status, requestUrl);
             }
             return response.json();
         }
@@ -179,13 +221,28 @@
         const orderBy = tokenValue('order_by', 'updated_at');
         const requestedSort = tokenValue('sort', 'desc').toLowerCase();
         const sort = requestedSort === 'asc' ? 'asc' : 'desc';
+        const requestedTypes = [...query.matchAll(/(?:^|\s)type:("[^"]*"|'[^']*'|\S+)/gi)]
+            .map(match => match[1].replace(/^["']|["']$/g, '').toLowerCase());
+        const invalidType = requestedTypes.find(type => !/^tickets?$/.test(type));
+        if (invalidType) {
+            throw new Error(`O Extrator aceita somente tickets; remova o filtro type:${invalidType}.`);
+        }
         const filterQuery = normalizeQuery(
             query
+                .replace(/(?:^|\s)type:(?:"[^"]*"|'[^']*'|\S+)/gi, ' ')
                 .replace(/(?:^|\s)order_by:(?:"[^"]*"|'[^']*'|\S+)/gi, ' ')
                 .replace(/(?:^|\s)sort:(?:"[^"]*"|'[^']*'|\S+)/gi, ' ')
         );
         if (!filterQuery) throw new Error('A query contém apenas opções de ordenação e não possui filtros.');
         return { filterQuery, orderBy, sort };
+    }
+
+    async function validateSession() {
+        const payload = await fetchJson(apiUrl('/api/v2/users/me.json'));
+        if (!payload.user?.id) {
+            throw new Error('O Zendesk não confirmou o usuário autenticado nesta aba.');
+        }
+        log(`Sessão validada para ${payload.user.name || payload.user.email || `usuário ${payload.user.id}`}.`);
     }
 
     async function getSearchCount(filterQuery) {
@@ -220,9 +277,26 @@
             await sleep(REQUEST_DELAY_MS);
         }
 
+        const priorityOrder = { low: 1, normal: 2, high: 3, urgent: 4 };
+        const statusOrder = { new: 1, open: 2, pending: 3, hold: 4, solved: 5, closed: 6 };
+        const comparableValue = ticket => {
+            const value = ticket?.[orderBy];
+            if (orderBy === 'priority') return priorityOrder[value] ?? 0;
+            if (orderBy === 'status') return statusOrder[value] ?? 0;
+            if (typeof value === 'number') return value;
+            if (/_at$/i.test(orderBy)) {
+                const timestamp = Date.parse(value);
+                if (Number.isFinite(timestamp)) return timestamp;
+            }
+            return String(value ?? '');
+        };
         return [...byId.values()].sort((a, b) => {
             const direction = sort === 'asc' ? 1 : -1;
-            const valueOrder = String(a?.[orderBy] ?? '').localeCompare(String(b?.[orderBy] ?? ''));
+            const valueA = comparableValue(a);
+            const valueB = comparableValue(b);
+            const valueOrder = typeof valueA === 'number' && typeof valueB === 'number'
+                ? valueA - valueB
+                : String(valueA).localeCompare(String(valueB), 'pt-BR', { numeric: true });
             return valueOrder * direction || (Number(a.id || 0) - Number(b.id || 0)) * direction;
         });
     }
@@ -282,6 +356,7 @@
     }
 
     async function loadCustomStatuses() {
+        if (statusCache.size) return;
         try {
             // Este endpoint retorna a lista completa e não aceita paginação.
             const payload = await fetchJson(apiUrl('/api/v2/custom_statuses.json'));
@@ -292,6 +367,7 @@
                 }
             }
         } catch (error) {
+            if (isAuthenticationError(error)) throw error;
             log(`Aviso: nomes dos status não puderam ser carregados: ${error.message}`);
         }
     }
@@ -313,7 +389,12 @@
         template.content.querySelectorAll('img').forEach((image, index) => {
             const rawSource = image.getAttribute('src') || '';
             let source = '';
-            try { source = new URL(rawSource, BASE).toString(); } catch (_) { source = ''; }
+            try {
+                const resolved = new URL(rawSource, BASE);
+                source = ['http:', 'https:'].includes(resolved.protocol) ? resolved.toString() : '';
+            } catch (_) {
+                source = '';
+            }
             if (source) inlineImages.push({ source, label: image.getAttribute('alt') || `Imagem ${index + 1}` });
             image.remove();
         });
@@ -328,9 +409,15 @@
 
         template.content.querySelectorAll('a[href]').forEach(anchor => {
             try {
-                anchor.href = new URL(anchor.getAttribute('href'), BASE).toString();
+                const resolved = new URL(anchor.getAttribute('href'), BASE);
+                if (!['http:', 'https:', 'mailto:'].includes(resolved.protocol)) throw new Error('Protocolo não permitido');
+                const href = resolved.toString();
+                anchor.href = href;
                 anchor.target = '_blank';
                 anchor.rel = 'noopener noreferrer';
+                if (!anchor.textContent.includes(href)) {
+                    anchor.append(document.createTextNode(` (${href})`));
+                }
             } catch (_) {
                 anchor.removeAttribute('href');
             }
@@ -364,7 +451,9 @@
             .replace(/[\u2018\u2019]/g, "'")
             .replace(/[\u201c\u201d]/g, '"')
             .replace(/\u2022/g, '-')
-            .replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\xFF]/g, '?');
+            .replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\xFF]/gu, character =>
+                `[U+${character.codePointAt(0).toString(16).toUpperCase()}]`
+            );
     }
 
     function htmlToPlainText(html) {
@@ -374,6 +463,9 @@
         template.content.querySelectorAll('li').forEach(node => {
             node.prepend(document.createTextNode('- '));
             node.append(document.createTextNode('\n'));
+        });
+        template.content.querySelectorAll('th, td').forEach(node => {
+            node.append(document.createTextNode('\t'));
         });
         template.content.querySelectorAll('p, div, pre, blockquote, h1, h2, h3, h4, tr').forEach(node => {
             node.append(document.createTextNode('\n'));
@@ -558,7 +650,9 @@
     }
 
     function csvCell(value) {
-        return `"${String(value ?? '').replaceAll('"', '""')}"`;
+        let text = String(value ?? '');
+        if (/^[\u0000-\u0020]*[=+\-@]/.test(text)) text = `'${text}`;
+        return `"${text.replaceAll('"', '""')}"`;
     }
 
     function createManifestCsv(rows) {
@@ -660,6 +754,11 @@
         return `ticket-list:${ticketIds.join(',')}`;
     }
 
+    function exportProfileKey(sourceKey, includePrivate) {
+        const visibility = includePrivate ? 'public-and-private' : 'public-only';
+        return `profile:${EXPORT_PROFILE_VERSION}:${visibility}:${sourceKey}`;
+    }
+
     function queryId(query) {
         let hash = 2166136261;
         for (const char of query) {
@@ -673,28 +772,58 @@
         return `${STATE_PREFIX}${queryId(query)}`;
     }
 
-    function loadState(query) {
+    function emptyState(query) {
+        return { query, completed: {}, failures: {} };
+    }
+
+    async function loadState(query) {
         try {
-            const state = JSON.parse(localStorage.getItem(stateKey(query)) || '{}');
-            if (state.query !== query || typeof state.completed !== 'object') {
-                return { query, completed: {} };
+            const db = await openHandleDatabase();
+            const state = await new Promise((resolve, reject) => {
+                const transaction = db.transaction(PROGRESS_STORE, 'readonly');
+                const request = transaction.objectStore(PROGRESS_STORE).get(stateKey(query));
+                request.onsuccess = () => resolve(request.result || null);
+                request.onerror = () => reject(request.error);
+            });
+            db.close();
+            if (!state || state.query !== query || !state.completed
+                || typeof state.completed !== 'object' || Array.isArray(state.completed)) {
+                return emptyState(query);
+            }
+            if (!state.failures || typeof state.failures !== 'object' || Array.isArray(state.failures)) {
+                state.failures = {};
             }
             return state;
         } catch (_) {
-            return { query, completed: {} };
+            return emptyState(query);
         }
     }
 
-    function saveState(query, state) {
-        localStorage.setItem(stateKey(query), JSON.stringify(state));
+    async function saveState(query, state) {
+        const db = await openHandleDatabase();
+        await new Promise((resolve, reject) => {
+            const transaction = db.transaction(PROGRESS_STORE, 'readwrite');
+            transaction.objectStore(PROGRESS_STORE).put(state, stateKey(query));
+            transaction.oncomplete = resolve;
+            transaction.onerror = () => reject(transaction.error);
+            transaction.onabort = () => reject(transaction.error);
+        });
+        db.close();
     }
 
-    function clearState(query) {
-        localStorage.removeItem(stateKey(query));
+    async function clearState(query) {
+        const db = await openHandleDatabase();
+        await new Promise((resolve, reject) => {
+            const transaction = db.transaction(PROGRESS_STORE, 'readwrite');
+            transaction.objectStore(PROGRESS_STORE).delete(stateKey(query));
+            transaction.oncomplete = resolve;
+            transaction.onerror = () => reject(transaction.error);
+        });
+        db.close();
         log('Progresso desta query apagado. A próxima execução começará do primeiro ticket.');
     }
 
-    function clearEverything(panel) {
+    async function clearEverything(panel) {
         const keysToRemove = [];
         for (let index = 0; index < localStorage.length; index += 1) {
             const key = localStorage.key(index);
@@ -702,6 +831,20 @@
         }
         keysToRemove.forEach(key => localStorage.removeItem(key));
         localStorage.removeItem(LEGACY_QUERY_KEY);
+        const db = await openHandleDatabase();
+        const indexedProgressCount = await new Promise((resolve, reject) => {
+            const transaction = db.transaction(PROGRESS_STORE, 'readwrite');
+            const store = transaction.objectStore(PROGRESS_STORE);
+            const countRequest = store.count();
+            let count = 0;
+            countRequest.onsuccess = () => {
+                count = countRequest.result;
+                store.clear();
+            };
+            transaction.oncomplete = () => resolve(count);
+            transaction.onerror = () => reject(transaction.error);
+        });
+        db.close();
         panel.querySelector('#attus-zdexp-query').value = '';
         panel.querySelector('#attus-zdexp-ticket-list').value = '';
         panel.querySelector('#attus-zdexp-file').value = '';
@@ -709,15 +852,18 @@
         panel.querySelector('#attus-zdexp-private').checked = true;
         panel.querySelector('#attus-zdexp-resume').checked = true;
         panel.querySelector('#attus-zdexp-status').textContent = '';
-        log(`Tudo limpo: campos e ${keysToRemove.length} progresso(s) salvo(s) foram removidos.`);
+        log(`Tudo limpo: campos e ${keysToRemove.length + indexedProgressCount} progresso(s) salvo(s) foram removidos.`);
     }
 
     function openHandleDatabase() {
         return new Promise((resolve, reject) => {
-            const request = indexedDB.open(HANDLE_DB, 1);
+            const request = indexedDB.open(HANDLE_DB, HANDLE_DB_VERSION);
             request.onupgradeneeded = () => {
                 if (!request.result.objectStoreNames.contains(HANDLE_STORE)) {
                     request.result.createObjectStore(HANDLE_STORE);
+                }
+                if (!request.result.objectStoreNames.contains(PROGRESS_STORE)) {
+                    request.result.createObjectStore(PROGRESS_STORE);
                 }
             };
             request.onsuccess = () => resolve(request.result);
@@ -796,8 +942,10 @@
         const writable = await fileHandle.createWritable();
         try {
             await writable.write(blob);
-        } finally {
             await writable.close();
+        } catch (error) {
+            try { await writable.abort(); } catch (_) { /* arquivo temporário já encerrado */ }
+            throw error;
         }
     }
 
@@ -821,6 +969,7 @@
 
     async function exportTicket(searchTicket, index, total, includePrivate, sourceLabel, progressKey, state, errorRows) {
         log(`Preparando ticket #${searchTicket.id} (${index + 1}/${total})...`);
+        let completedTicketId = null;
         try {
             const documentData = await loadTicketDocument(searchTicket, includePrivate);
             const filename = `${documentData.ticket.id}-${safeFilename(documentData.ticket.subject)}.pdf`;
@@ -828,11 +977,17 @@
             const row = manifestRow(documentData, filename, sourceLabel);
 
             await saveBlobToDirectory(pdfBlob, filename);
-            state.completed[String(documentData.ticket.id)] = row;
-            saveState(progressKey, state);
+            completedTicketId = String(documentData.ticket.id);
+            state.completed[completedTicketId] = row;
+            delete state.failures[completedTicketId];
+            await saveState(progressKey, state);
             log(`PDF salvo: ${filename} (${index + 1}/${total}).`);
+            await sleep(DOWNLOAD_DELAY_MS);
+            return true;
         } catch (error) {
-            errorRows.push({
+            if (isAuthenticationError(error)) throw error;
+            if (completedTicketId) delete state.completed[completedTicketId];
+            const errorRow = {
                 id: searchTicket.id,
                 assunto: searchTicket.subject || '',
                 status_zendesk: searchTicket.status || '',
@@ -845,10 +1000,18 @@
                 query_origem: sourceLabel,
                 arquivo: '',
                 erro: error.message
-            });
+            };
+            errorRows.push(errorRow);
+            state.failures[String(searchTicket.id)] = errorRow;
+            try {
+                await saveState(progressKey, state);
+            } catch (stateError) {
+                log(`Aviso: não foi possível registrar a falha do ticket #${searchTicket.id}: ${stateError.message}`);
+            }
             log(`ERRO no ticket #${searchTicket.id}: ${error.message}`);
+            await sleep(DOWNLOAD_DELAY_MS);
+            return false;
         }
-        await sleep(DOWNLOAD_DELAY_MS);
     }
 
     async function startExport() {
@@ -868,7 +1031,9 @@
             log('ERRO: informe uma query ou uma lista de tickets.');
             return;
         }
-        const progressKey = ticketIds.length ? ticketListKey(ticketIds) : query;
+        const includePrivate = document.querySelector('#attus-zdexp-private').checked;
+        const sourceKey = ticketIds.length ? ticketListKey(ticketIds) : query;
+        const progressKey = exportProfileKey(sourceKey, includePrivate);
         const sourceLabel = ticketIds.length
             ? `Lista direta com ${ticketIds.length} ticket(s)`
             : query;
@@ -877,13 +1042,13 @@
         cancelRequested = false;
         setRunningUi(true);
         const limit = Math.max(0, Number(document.querySelector('#attus-zdexp-limit').value || 0));
-        const includePrivate = document.querySelector('#attus-zdexp-private').checked;
         const resume = document.querySelector('#attus-zdexp-resume').checked;
 
         try {
             const outputDirectory = await ensureOutputDirectory();
             if (!outputDirectory) throw new Error('Seleção da pasta de saída cancelada.');
             log('Validando a sessão existente do Chrome...');
+            await validateSession();
             await loadCustomStatuses();
             let tickets;
             let expected = null;
@@ -908,14 +1073,18 @@
             }
             if (limit > 0) tickets = tickets.slice(0, limit);
 
-            const state = loadState(progressKey);
-            if (!resume) state.completed = {};
+            const state = await loadState(progressKey);
+            if (!resume) {
+                state.completed = {};
+                state.failures = {};
+                await saveState(progressKey, state);
+            }
             const pending = tickets.filter(ticket => !state.completed[String(ticket.id)]);
             const skipped = tickets.length - pending.length;
             log(`${tickets.length} ticket(s) selecionado(s); ${skipped} já concluído(s); ${pending.length} pendente(s).`);
 
             if (!pending.length) {
-                const allRows = Object.values(state.completed);
+                const allRows = [...Object.values(state.completed), ...Object.values(state.failures)];
                 if (allRows.length) {
                     await saveBlobToDirectory(
                         new Blob([createManifestCsv(allRows)], { type: 'text/csv;charset=utf-8' }),
@@ -929,24 +1098,37 @@
             log(`Iniciando a gravação de ${pending.length} PDF(s) em "${outputDirectory.name}" sem perguntas por arquivo.`);
 
             const errorRows = [];
+            let successfulThisRun = 0;
+            let fatalError = null;
             for (let index = 0; index < pending.length; index += 1) {
                 if (cancelRequested) break;
-                await exportTicket(
-                    pending[index], index, pending.length, includePrivate,
-                    sourceLabel, progressKey, state, errorRows
-                );
+                try {
+                    const succeeded = await exportTicket(
+                        pending[index], index, pending.length, includePrivate,
+                        sourceLabel, progressKey, state, errorRows
+                    );
+                    if (succeeded) successfulThisRun += 1;
+                } catch (error) {
+                    fatalError = error;
+                    break;
+                }
             }
 
-            const allRows = [...Object.values(state.completed), ...errorRows];
+            const allRows = [...Object.values(state.completed), ...Object.values(state.failures)];
             if (allRows.length) {
                 await saveBlobToDirectory(
                     new Blob([createManifestCsv(allRows)], { type: 'text/csv;charset=utf-8' }),
                     `zendesk-tickets-manifesto-${queryId(progressKey)}.csv`
                 );
             }
-            log(cancelRequested
-                ? 'Exportação interrompida. Os PDFs concluídos foram salvos e podem ser retomados.'
-                : `Concluído: ${allRows.length} ticket(s) registrados no progresso.`);
+            if (fatalError) throw fatalError;
+            if (cancelRequested) {
+                log('Exportação interrompida. Os PDFs concluídos foram salvos e podem ser retomados.');
+            } else if (errorRows.length) {
+                log(`Concluído com alertas: ${successfulThisRun} PDF(s) salvo(s) e ${errorRows.length} erro(s) nesta execução.`);
+            } else {
+                log(`Concluído: ${successfulThisRun} PDF(s) salvo(s) nesta execução.`);
+            }
         } catch (error) {
             log(`ERRO: ${error.message}`);
             console.error('[Extrator de Tickets]', error);
@@ -1008,12 +1190,12 @@
             <label class="attus-zdexp-check"><input id="attus-zdexp-private" type="checkbox" checked> Incluir notas internas</label>
             <label class="attus-zdexp-check"><input id="attus-zdexp-resume" type="checkbox" checked> Retomar e pular PDFs já concluídos</label>
             <p id="attus-zdexp-folder">Nenhuma pasta selecionada.</p>
-            <p class="attus-zdexp-note">Quando houver uma lista, ela terá prioridade e a query será ignorada. Arraste a borda inferior direita para redimensionar esta janela.</p>
+            <p class="attus-zdexp-note">Quando houver uma lista, ela terá prioridade e a query será ignorada. O progresso é separado conforme a inclusão de notas internas. Arraste a borda inferior direita para redimensionar esta janela.</p>
             <div class="attus-zdexp-actions">
                 <button id="attus-zdexp-select-folder" type="button">Selecionar pasta</button>
                 <button id="attus-zdexp-start" class="primary" type="button">Iniciar exportação</button>
                 <button id="attus-zdexp-cancel" class="danger" type="button" disabled>Cancelar</button>
-                <button id="attus-zdexp-reset" type="button">Apagar progresso desta query</button>
+                <button id="attus-zdexp-reset" type="button">Apagar progresso desta coleta</button>
                 <button id="attus-zdexp-clear-all" class="danger" type="button">Limpar tudo</button>
             </div>
             <pre id="attus-zdexp-status">Pronto. Recomenda-se testar primeiro com limite 1.</pre>
@@ -1045,7 +1227,7 @@
             cancelRequested = true;
             log('Cancelamento solicitado; finalizando a etapa atual...');
         });
-        panel.querySelector('#attus-zdexp-reset').addEventListener('click', () => {
+        panel.querySelector('#attus-zdexp-reset').addEventListener('click', async () => {
             const query = normalizeQuery(panel.querySelector('#attus-zdexp-query').value);
             const ticketListText = panel.querySelector('#attus-zdexp-ticket-list').value.trim();
             const ticketIds = parseTicketIds(ticketListText);
@@ -1053,15 +1235,28 @@
                 log('ERRO: a lista não contém tickets válidos.');
                 return;
             }
-            const progressKey = ticketIds.length ? ticketListKey(ticketIds) : query;
-            if (!progressKey) {
+            const sourceKey = ticketIds.length ? ticketListKey(ticketIds) : query;
+            if (!sourceKey) {
                 log('ERRO: informe a query ou lista cujo progresso deve ser apagado.');
                 return;
             }
-            if (window.confirm('Apagar o progresso salvo desta extração?')) clearState(progressKey);
+            const includePrivate = panel.querySelector('#attus-zdexp-private').checked;
+            const progressKey = exportProfileKey(sourceKey, includePrivate);
+            if (window.confirm('Apagar o progresso salvo desta extração?')) {
+                try {
+                    await clearState(progressKey);
+                } catch (error) {
+                    log(`ERRO ao apagar o progresso: ${error.message}`);
+                }
+            }
         });
-        panel.querySelector('#attus-zdexp-clear-all').addEventListener('click', () => {
-            clearEverything(panel);
+        panel.querySelector('#attus-zdexp-clear-all').addEventListener('click', async () => {
+            if (!window.confirm('Limpar todos os campos e progressos salvos? A pasta autorizada será preservada.')) return;
+            try {
+                await clearEverything(panel);
+            } catch (error) {
+                log(`ERRO ao limpar os dados: ${error.message}`);
+            }
         });
         restoreDirectoryHandle();
     }
