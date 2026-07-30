@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Zendesk - Extrator de Tickets
 // @namespace    https://attus-ai.zendesk.com/
-// @version      2026.07.29.01
-// @description  Exporta tickets de uma busca editável do Zendesk em PDFs pesquisáveis, gravados diretamente em uma pasta escolhida.
+// @version      2026.07.29.02
+// @description  Exporta tickets do Zendesk em PDF, Markdown ou ambos, com retomada e processamento paralelo controlado.
 // @author       ATTUS
 // @match        https://attus-ai.zendesk.com/agent/*
 // @updateURL    https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/zendesk-exportar-tickets-n2-resolvidos.user.js
@@ -24,17 +24,24 @@
     const HANDLE_STORE = 'handles';
     const HANDLE_KEY = 'output-directory';
     const PROGRESS_STORE = 'progress';
-    const EXPORT_PROFILE_VERSION = 4;
+    const EXPORT_PROFILE_VERSION = 5;
     const REQUEST_DELAY_MS = 120;
-    const DOWNLOAD_DELAY_MS = 1200;
     const MAX_RETRIES = 5;
+    const MIN_CONCURRENCY = 1;
+    const MAX_CONCURRENCY = 6;
+    const DEFAULT_CONCURRENCY = 3;
+    const RATE_LIMIT_RESERVE = 10;
 
     const userCache = new Map();
+    const userPendingCache = new Map();
     const groupCache = new Map();
+    const groupPendingCache = new Map();
     const statusCache = new Map();
     let cancelRequested = false;
     let running = false;
     let directoryHandle = null;
+    let apiPauseUntil = 0;
+    let progressWriteChain = Promise.resolve();
 
     GM_addStyle(`
         #attus-zdexp-open {
@@ -66,8 +73,9 @@
         }
         .attus-zdexp-grid { display: grid; grid-template-columns: 1fr; gap: 9px; margin: 10px 0; }
         .attus-zdexp-grid label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; }
-        .attus-zdexp-grid input[type="number"] {
+        .attus-zdexp-grid input[type="number"], .attus-zdexp-grid select {
             width: 100%; padding: 7px; border: 1px solid #aebdca; border-radius: 5px;
+            background: #fff; color: #172b4d; box-sizing: border-box;
         }
         .attus-zdexp-grid textarea {
             width: 100%; min-height: 86px; resize: vertical; padding: 7px;
@@ -164,10 +172,65 @@
         return url.toString();
     }
 
+    function secondsFromHeader(value, fallback) {
+        const numeric = value !== null && value !== '' ? Number(value) : Number.NaN;
+        if (Number.isFinite(numeric)) return Math.max(1, Math.min(numeric, 600));
+        const timestamp = Date.parse(value);
+        if (Number.isFinite(timestamp)) {
+            return Math.max(1, Math.min(Math.ceil((timestamp - Date.now()) / 1000), 600));
+        }
+        return fallback;
+    }
+
+    function pauseApiRequests(seconds, reason) {
+        const until = Date.now() + Math.max(1, seconds) * 1000;
+        if (until <= apiPauseUntil) return;
+        apiPauseUntil = until;
+        log(`${reason}; fila da API pausada por ${Math.ceil(seconds)}s.`);
+    }
+
+    async function waitForApiWindow() {
+        const remaining = apiPauseUntil - Date.now();
+        if (remaining <= 0) {
+            apiPauseUntil = 0;
+            return;
+        }
+        await sleep(remaining);
+    }
+
+    function monitorRateLimit(response) {
+        const remainingHeader =
+            response.headers.get('ratelimit-remaining')
+            ?? response.headers.get('x-rate-limit-remaining');
+        const resetHeader = response.headers.get('ratelimit-reset');
+        const remaining = remainingHeader !== null ? Number(remainingHeader) : Number.NaN;
+        const reset = resetHeader !== null ? Number(resetHeader) : Number.NaN;
+        if (Number.isFinite(remaining) && remaining <= RATE_LIMIT_RESERVE && Number.isFinite(reset)) {
+            pauseApiRequests(reset + 1, `Limite global próximo do fim (${remaining} restante(s))`);
+        }
+
+        const endpointHeaders = [
+            'zendesk-ratelimit-search-index',
+            'zendesk-ratelimit-tickets-index',
+            'zendesk-ratelimit-tickets-index-pagination'
+        ];
+        for (const headerName of endpointHeaders) {
+            const header = response.headers.get(headerName);
+            if (!header) continue;
+            const endpointRemaining = Number(header.match(/remaining=(\d+)/i)?.[1]);
+            const endpointReset = Number(header.match(/resets=(\d+)/i)?.[1]);
+            if (Number.isFinite(endpointRemaining) && endpointRemaining <= RATE_LIMIT_RESERVE
+                && Number.isFinite(endpointReset)) {
+                pauseApiRequests(endpointReset + 1, `Limite do endpoint próximo do fim (${endpointRemaining} restante(s))`);
+            }
+        }
+    }
+
     async function fetchJson(url) {
         const requestUrl = validatedApiUrl(url);
         let lastError = '';
         for (let attempt = 1; attempt <= MAX_RETRIES; attempt += 1) {
+            await waitForApiWindow();
             let response;
             try {
                 response = await fetch(requestUrl, {
@@ -185,6 +248,7 @@
                 }
                 throw apiError(`A API não pôde ser acessada após ${MAX_RETRIES} tentativas. ${lastError}`, null, requestUrl);
             }
+            monitorRateLimit(response);
             if (response.status === 401 || response.status === 403) {
                 throw apiError(
                     `A sessão desta aba não tem acesso à API do Zendesk (HTTP ${response.status}).`,
@@ -197,12 +261,17 @@
                 const retryable = response.status === 429 || response.status >= 500;
                 lastError = `HTTP ${response.status}: ${text.slice(0, 350)}`;
                 if (retryable && attempt < MAX_RETRIES) {
-                    const retryHeader = Number(response.headers.get('retry-after'));
-                    const seconds = Number.isFinite(retryHeader)
-                        ? Math.max(1, Math.min(retryHeader, 60))
-                        : Math.min(2 ** (attempt - 1), 20);
-                    log(`Zendesk respondeu HTTP ${response.status}; tentando novamente em ${seconds}s...`);
-                    await sleep(seconds * 1000);
+                    const seconds = secondsFromHeader(
+                        response.headers.get('retry-after'),
+                        Math.min(2 ** (attempt - 1), 20)
+                    );
+                    if (response.status === 429) {
+                        pauseApiRequests(seconds, 'Zendesk respondeu HTTP 429');
+                        await waitForApiWindow();
+                    } else {
+                        log(`Zendesk respondeu HTTP ${response.status}; tentando novamente em ${seconds}s...`);
+                        await sleep(seconds * 1000);
+                    }
                     continue;
                 }
                 throw apiError(`Falha na API: ${lastError} em ${requestUrl}.`, response.status, requestUrl);
@@ -330,29 +399,57 @@
     }
 
     async function populateUsers(ids) {
-        const pending = [...new Set(ids.map(asNumber).filter(Boolean))]
-            .filter(id => !userCache.has(id));
-        for (let index = 0; index < pending.length; index += 100) {
-            const batch = pending.slice(index, index + 100);
-            const payload = await fetchJson(apiUrl('/api/v2/users/show_many.json', {
-                ids: batch.join(',')
-            }));
-            for (const user of payload.users || []) {
-                const id = asNumber(user?.id);
-                if (id) userCache.set(id, user);
-            }
-            await sleep(REQUEST_DELAY_MS);
+        const requested = [...new Set(ids.map(asNumber).filter(Boolean))];
+        const fresh = requested.filter(id => !userCache.has(id) && !userPendingCache.has(id));
+        for (let index = 0; index < fresh.length; index += 100) {
+            const batch = fresh.slice(index, index + 100);
+            const batchPromise = (async () => {
+                try {
+                    const payload = await fetchJson(apiUrl('/api/v2/users/show_many.json', {
+                        ids: batch.join(',')
+                    }));
+                    batch.forEach(id => userCache.set(id, { id }));
+                    for (const user of payload.users || []) {
+                        const id = asNumber(user?.id);
+                        if (id) userCache.set(id, user);
+                    }
+                } catch (error) {
+                    if (isAuthenticationError(error)) throw error;
+                    batch.forEach(id => userCache.set(id, { id }));
+                    log(`Aviso: dados de ${batch.length} usuário(s) não puderam ser carregados: ${error.message}`);
+                } finally {
+                    batch.forEach(id => userPendingCache.delete(id));
+                }
+            })();
+            batch.forEach(id => userPendingCache.set(id, batchPromise));
         }
+        const pendingPromises = requested
+            .map(id => userPendingCache.get(id))
+            .filter(Boolean);
+        await Promise.all([...new Set(pendingPromises)]);
     }
 
     async function groupName(groupId) {
         const id = asNumber(groupId);
         if (!id) return 'Não atribuído';
-        if (!groupCache.has(id)) {
-            const payload = await fetchJson(apiUrl(`/api/v2/groups/${id}.json`));
-            groupCache.set(id, payload.group?.name || `Grupo ${id}`);
+        if (groupCache.has(id)) return groupCache.get(id);
+        if (!groupPendingCache.has(id)) {
+            const pending = (async () => {
+                try {
+                    const payload = await fetchJson(apiUrl(`/api/v2/groups/${id}.json`));
+                    groupCache.set(id, payload.group?.name || `Grupo ${id}`);
+                } catch (error) {
+                    if (isAuthenticationError(error)) throw error;
+                    groupCache.set(id, `Grupo ${id}`);
+                    log(`Aviso: o nome do grupo ${id} não pôde ser carregado: ${error.message}`);
+                } finally {
+                    groupPendingCache.delete(id);
+                }
+                return groupCache.get(id);
+            })();
+            groupPendingCache.set(id, pending);
         }
-        return groupCache.get(id);
+        return groupPendingCache.get(id);
     }
 
     async function loadCustomStatuses() {
@@ -381,12 +478,12 @@
     }
 
     function sanitizeCommentHtml(rawHtml) {
-        const template = document.createElement('template');
-        template.innerHTML = String(rawHtml || '');
-        template.content.querySelectorAll('script, style, iframe, object, embed, form, link, meta').forEach(node => node.remove());
+        const root = document.createElement('div');
+        root.innerHTML = String(rawHtml || '');
+        root.querySelectorAll('script, style, iframe, object, embed, form, link, meta').forEach(node => node.remove());
 
         const inlineImages = [];
-        template.content.querySelectorAll('img').forEach((image, index) => {
+        root.querySelectorAll('img').forEach((image, index) => {
             const rawSource = image.getAttribute('src') || '';
             let source = '';
             try {
@@ -399,7 +496,7 @@
             image.remove();
         });
 
-        template.content.querySelectorAll('*').forEach(element => {
+        root.querySelectorAll('*').forEach(element => {
             for (const attribute of [...element.attributes]) {
                 const name = attribute.name.toLowerCase();
                 if (name.startsWith('on') || name === 'srcdoc') element.removeAttribute(attribute.name);
@@ -407,7 +504,7 @@
             }
         });
 
-        template.content.querySelectorAll('a[href]').forEach(anchor => {
+        root.querySelectorAll('a[href]').forEach(anchor => {
             try {
                 const resolved = new URL(anchor.getAttribute('href'), BASE);
                 if (!['http:', 'https:', 'mailto:'].includes(resolved.protocol)) throw new Error('Protocolo não permitido');
@@ -415,30 +512,30 @@
                 anchor.href = href;
                 anchor.target = '_blank';
                 anchor.rel = 'noopener noreferrer';
-                if (!anchor.textContent.includes(href)) {
-                    anchor.append(document.createTextNode(` (${href})`));
-                }
             } catch (_) {
                 anchor.removeAttribute('href');
             }
         });
 
-        const wrapper = document.createElement('div');
-        wrapper.appendChild(template.content.cloneNode(true));
-        return { html: wrapper.innerHTML, inlineImages };
+        return { html: root.innerHTML, inlineImages };
     }
 
     async function loadTicketDocument(searchTicket, includePrivate) {
         const ticketId = Number(searchTicket.id);
-        const ticket = await loadTicket(ticketId);
-        const comments = await collectComments(ticketId, includePrivate);
-        await populateUsers([
+        const [ticket, comments] = await Promise.all([
+            loadTicket(ticketId),
+            collectComments(ticketId, includePrivate)
+        ]);
+        const usersPromise = populateUsers([
             ticket.requester_id,
             ticket.submitter_id,
             ticket.assignee_id,
             ...comments.map(comment => comment.author_id)
         ]);
-        const group = await groupName(ticket.group_id);
+        const [group] = await Promise.all([
+            groupName(ticket.group_id),
+            usersPromise
+        ]);
         const statusId = asNumber(ticket.custom_status_id);
         const customStatus = statusCache.get(statusId) || (statusId ? `ID ${statusId}` : ticket.status || 'Não informado');
         return { ticket, comments, group, customStatus };
@@ -456,26 +553,41 @@
             );
     }
 
-    function htmlToPlainText(html) {
-        const template = document.createElement('template');
-        template.innerHTML = String(html || '');
-        template.content.querySelectorAll('br').forEach(node => node.replaceWith('\n'));
-        template.content.querySelectorAll('li').forEach(node => {
+    function htmlToNormalizedText(html, pdfSafe = false, markdownLinks = false) {
+        const root = document.createElement('div');
+        root.innerHTML = String(html || '');
+        root.querySelectorAll('a[href]').forEach(anchor => {
+            const href = anchor.getAttribute('href') || '';
+            if (!href) return;
+            if (markdownLinks) {
+                const label = markdownInline(anchor.textContent || href);
+                anchor.replaceWith(document.createTextNode(`[${label}](${markdownUrl(href)})`));
+            } else if (!anchor.textContent.includes(href)) {
+                anchor.append(document.createTextNode(` (${href})`));
+            }
+        });
+        root.querySelectorAll('br').forEach(node => node.replaceWith('\n'));
+        root.querySelectorAll('li').forEach(node => {
             node.prepend(document.createTextNode('- '));
             node.append(document.createTextNode('\n'));
         });
-        template.content.querySelectorAll('th, td').forEach(node => {
+        root.querySelectorAll('th, td').forEach(node => {
             node.append(document.createTextNode('\t'));
         });
-        template.content.querySelectorAll('p, div, pre, blockquote, h1, h2, h3, h4, tr').forEach(node => {
+        root.querySelectorAll('p, div, pre, blockquote, h1, h2, h3, h4, tr').forEach(node => {
             node.append(document.createTextNode('\n'));
         });
-        return toPdfText(template.content.textContent || '')
+        const text = String(root.textContent || '')
             .split(/\r?\n/)
             .map(line => line.replace(/[ \t]+/g, ' ').trim())
             .join('\n')
             .replace(/\n{3,}/g, '\n\n')
             .trim();
+        return pdfSafe ? toPdfText(text) : text;
+    }
+
+    function htmlToPlainText(html) {
+        return htmlToNormalizedText(html, true);
     }
 
     async function renderPdfBlob(documentData, query) {
@@ -649,6 +761,132 @@
         return doc.output('blob');
     }
 
+    function formatsForSelection(value) {
+        if (value === 'md') return ['md'];
+        if (value === 'both') return ['pdf', 'md'];
+        return ['pdf'];
+    }
+
+    function recordHasFormats(record, formats) {
+        return Boolean(record) && !record.erro
+            && formats.every(format => Boolean(record[`arquivo_${format}`]));
+    }
+
+    function yamlValue(value) {
+        if (value === undefined || value === null || value === '') return 'null';
+        if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+        return JSON.stringify(String(value));
+    }
+
+    function markdownInline(value) {
+        return String(value ?? '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .replace(/([\\`*_[\]<>#])/g, '\\$1');
+    }
+
+    function markdownUrl(value) {
+        return String(value || '')
+            .replace(/\s/g, '%20')
+            .replace(/\(/g, '%28')
+            .replace(/\)/g, '%29');
+    }
+
+    function renderMarkdownText(documentData, sourceLabel, includePrivate) {
+        const { ticket, comments, group, customStatus } = documentData;
+        const ticketId = Number(ticket.id);
+        const subject = ticket.subject || `Ticket ${ticketId}`;
+        const ticketUrl = `${BASE}/agent/tickets/${ticketId}`;
+        const tags = Array.isArray(ticket.tags) ? ticket.tags : [];
+        const lines = [
+            '---',
+            `ticket_id: ${ticketId}`,
+            `assunto: ${yamlValue(subject)}`,
+            `status: ${yamlValue(ticket.status)}`,
+            `status_personalizado: ${yamlValue(customStatus)}`,
+            `custom_status_id: ${yamlValue(ticket.custom_status_id)}`,
+            `grupo: ${yamlValue(group)}`,
+            `solicitante: ${yamlValue(userLabel(ticket.requester_id))}`,
+            `responsavel: ${yamlValue(userLabel(ticket.assignee_id))}`,
+            `criado_em: ${yamlValue(ticket.created_at)}`,
+            `atualizado_em: ${yamlValue(ticket.updated_at)}`,
+            `prioridade: ${yamlValue(ticket.priority)}`,
+            `tipo: ${yamlValue(ticket.type)}`,
+            `inclui_notas_internas: ${Boolean(includePrivate)}`,
+            `comentarios: ${comments.length}`,
+            `tags: [${tags.map(yamlValue).join(', ')}]`,
+            `fonte: ${yamlValue(ticketUrl)}`,
+            `coleta: ${yamlValue(sourceLabel)}`,
+            `exportado_em: ${yamlValue(new Date().toISOString())}`,
+            '---',
+            '',
+            `# Ticket #${ticketId} — ${markdownInline(subject)}`,
+            '',
+            '## Metadados',
+            '',
+            `- **Status:** ${markdownInline(customStatus)}`,
+            `- **Grupo:** ${markdownInline(group)}`,
+            `- **Solicitante:** ${markdownInline(userLabel(ticket.requester_id))}`,
+            `- **Responsável:** ${markdownInline(userLabel(ticket.assignee_id))}`,
+            `- **Criado em:** ${markdownInline(formatDate(ticket.created_at))}`,
+            `- **Atualizado em:** ${markdownInline(formatDate(ticket.updated_at))}`,
+            `- **Prioridade:** ${markdownInline(ticket.priority || 'Não informada')}`,
+            `- **Tipo:** ${markdownInline(ticket.type || 'Não informado')}`,
+            `- **Tags:** ${tags.length ? tags.map(tag => `\`${String(tag).replaceAll('`', '\\`')}\``).join(', ') : 'Nenhuma'}`,
+            `- **Fonte:** <${markdownUrl(ticketUrl)}>`,
+            '',
+            `## Conversa (${comments.length} comentário(s))`,
+            ''
+        ];
+
+        if (!comments.length) lines.push('_Nenhum comentário incluído._', '');
+
+        comments.forEach((comment, index) => {
+            const visibility = comment.public ? 'Público' : 'Nota interna';
+            const sanitized = sanitizeCommentHtml(comment.html_body || comment.plain_body || comment.body || '');
+            const body = htmlToNormalizedText(sanitized.html, false, true)
+                || 'Comentário sem conteúdo textual.';
+            lines.push(
+                `### ${index + 1}. ${visibility}`,
+                '',
+                `- **Data:** ${markdownInline(formatDate(comment.created_at))}`,
+                `- **Autor:** ${markdownInline(userLabel(comment.author_id))}`,
+                '',
+                body,
+                ''
+            );
+            if (sanitized.inlineImages.length) {
+                lines.push('#### Imagens', '');
+                for (const image of sanitized.inlineImages) {
+                    lines.push(`- [${markdownInline(image.label)}](${markdownUrl(image.source)})`);
+                }
+                lines.push('');
+            }
+            if (comment.attachments?.length) {
+                lines.push('#### Anexos', '');
+                for (const attachment of comment.attachments) {
+                    const size = formatBytes(attachment.size);
+                    const label = `${attachment.file_name || 'Anexo'}${size ? ` (${size})` : ''}`;
+                    if (attachment.content_url) {
+                        lines.push(`- [${markdownInline(label)}](${markdownUrl(attachment.content_url)})`);
+                    } else {
+                        lines.push(`- ${markdownInline(label)}`);
+                    }
+                }
+                lines.push('');
+            }
+        });
+
+        return `${lines.join('\n').replace(/\n{4,}/g, '\n\n\n').trim()}\n`;
+    }
+
+    function renderMarkdownBlob(documentData, sourceLabel, includePrivate) {
+        return new Blob(
+            [renderMarkdownText(documentData, sourceLabel, includePrivate)],
+            { type: 'text/markdown;charset=utf-8' }
+        );
+    }
+
     function csvCell(value) {
         let text = String(value ?? '');
         if (/^[\u0000-\u0020]*[=+\-@]/.test(text)) text = `'${text}`;
@@ -658,7 +896,8 @@
     function createManifestCsv(rows) {
         const headers = [
             'id', 'assunto', 'status_zendesk', 'custom_status_id', 'grupo',
-            'criado_em', 'atualizado_em', 'comentarios', 'url', 'query_origem', 'arquivo', 'erro'
+            'criado_em', 'atualizado_em', 'comentarios', 'url', 'query_origem',
+            'formatos_salvos', 'arquivo_pdf', 'arquivo_md', 'erro'
         ];
         return '\uFEFF' + [
             headers.map(csvCell).join(';'),
@@ -773,7 +1012,7 @@
     }
 
     function emptyState(query) {
-        return { query, completed: {}, failures: {} };
+        return { query, records: {} };
     }
 
     async function loadState(query) {
@@ -786,12 +1025,9 @@
                 request.onerror = () => reject(request.error);
             });
             db.close();
-            if (!state || state.query !== query || !state.completed
-                || typeof state.completed !== 'object' || Array.isArray(state.completed)) {
+            if (!state || state.query !== query || !state.records
+                || typeof state.records !== 'object' || Array.isArray(state.records)) {
                 return emptyState(query);
-            }
-            if (!state.failures || typeof state.failures !== 'object' || Array.isArray(state.failures)) {
-                state.failures = {};
             }
             return state;
         } catch (_) {
@@ -809,6 +1045,15 @@
             transaction.onabort = () => reject(transaction.error);
         });
         db.close();
+    }
+
+    function enqueueStateSave(query, state) {
+        const snapshot = JSON.parse(JSON.stringify(state));
+        const operation = progressWriteChain
+            .catch(() => undefined)
+            .then(() => saveState(query, snapshot));
+        progressWriteChain = operation;
+        return operation;
     }
 
     async function clearState(query) {
@@ -849,6 +1094,8 @@
         panel.querySelector('#attus-zdexp-ticket-list').value = '';
         panel.querySelector('#attus-zdexp-file').value = '';
         panel.querySelector('#attus-zdexp-limit').value = '0';
+        panel.querySelector('#attus-zdexp-format').value = 'pdf';
+        panel.querySelector('#attus-zdexp-concurrency').value = String(DEFAULT_CONCURRENCY);
         panel.querySelector('#attus-zdexp-private').checked = true;
         panel.querySelector('#attus-zdexp-resume').checked = true;
         panel.querySelector('#attus-zdexp-status').textContent = '';
@@ -949,9 +1196,17 @@
         }
     }
 
-    function manifestRow(documentData, filename, query, error = '') {
+    function updateSavedFormats(row) {
+        const formats = [];
+        if (row.arquivo_pdf) formats.push('PDF');
+        if (row.arquivo_md) formats.push('Markdown');
+        row.formatos_salvos = formats.join(' + ');
+        return row;
+    }
+
+    function manifestRow(documentData, query, existing = {}) {
         const { ticket, comments, group } = documentData;
-        return {
+        return updateSavedFormats({
             id: ticket.id,
             assunto: ticket.subject || '',
             status_zendesk: ticket.status || '',
@@ -962,61 +1217,111 @@
             comentarios: comments.length,
             url: `${BASE}/agent/tickets/${ticket.id}`,
             query_origem: query,
-            arquivo: filename,
-            erro: error
-        };
+            formatos_salvos: existing.formatos_salvos || '',
+            arquivo_pdf: existing.arquivo_pdf || '',
+            arquivo_md: existing.arquivo_md || '',
+            erro: ''
+        });
     }
 
-    async function exportTicket(searchTicket, index, total, includePrivate, sourceLabel, progressKey, state, errorRows) {
+    function errorManifestRow(searchTicket, sourceLabel, existing, error) {
+        return updateSavedFormats({
+            id: searchTicket.id,
+            assunto: existing.assunto || searchTicket.subject || '',
+            status_zendesk: existing.status_zendesk || searchTicket.status || '',
+            custom_status_id: existing.custom_status_id || searchTicket.custom_status_id || '',
+            grupo: existing.grupo || '',
+            criado_em: existing.criado_em || searchTicket.created_at || '',
+            atualizado_em: existing.atualizado_em || searchTicket.updated_at || '',
+            comentarios: existing.comentarios ?? '',
+            url: `${BASE}/agent/tickets/${searchTicket.id}`,
+            query_origem: sourceLabel,
+            formatos_salvos: existing.formatos_salvos || '',
+            arquivo_pdf: existing.arquivo_pdf || '',
+            arquivo_md: existing.arquivo_md || '',
+            erro: error.message
+        });
+    }
+
+    async function exportTicket(
+        searchTicket, index, total, includePrivate, requestedFormats,
+        sourceLabel, progressKey, state, errorRows
+    ) {
         log(`Preparando ticket #${searchTicket.id} (${index + 1}/${total})...`);
-        let completedTicketId = null;
+        const ticketKey = String(searchTicket.id);
+        let row = state.records[ticketKey] || {};
+        let createdFiles = 0;
         try {
             const documentData = await loadTicketDocument(searchTicket, includePrivate);
-            const filename = `${documentData.ticket.id}-${safeFilename(documentData.ticket.subject)}.pdf`;
-            const pdfBlob = await renderPdfBlob(documentData, sourceLabel);
-            const row = manifestRow(documentData, filename, sourceLabel);
+            row = manifestRow(documentData, sourceLabel, row);
+            const basename = `${documentData.ticket.id}-${safeFilename(documentData.ticket.subject)}`;
 
-            await saveBlobToDirectory(pdfBlob, filename);
-            completedTicketId = String(documentData.ticket.id);
-            state.completed[completedTicketId] = row;
-            delete state.failures[completedTicketId];
-            await saveState(progressKey, state);
-            log(`PDF salvo: ${filename} (${index + 1}/${total}).`);
-            await sleep(DOWNLOAD_DELAY_MS);
-            return true;
+            for (const format of requestedFormats) {
+                if (row[`arquivo_${format}`]) continue;
+                const filename = `${basename}.${format}`;
+                const blob = format === 'pdf'
+                    ? await renderPdfBlob(documentData, sourceLabel)
+                    : renderMarkdownBlob(documentData, sourceLabel, includePrivate);
+                await saveBlobToDirectory(blob, filename);
+                row[`arquivo_${format}`] = filename;
+                row.erro = '';
+                updateSavedFormats(row);
+                state.records[ticketKey] = row;
+                await enqueueStateSave(progressKey, state);
+                createdFiles += 1;
+                log(`${format === 'pdf' ? 'PDF' : 'Markdown'} salvo: ${filename} (${index + 1}/${total}).`);
+            }
+
+            state.records[ticketKey] = updateSavedFormats(row);
+            await enqueueStateSave(progressKey, state);
+            return { success: true, createdFiles };
         } catch (error) {
             if (isAuthenticationError(error)) throw error;
-            if (completedTicketId) delete state.completed[completedTicketId];
-            const errorRow = {
-                id: searchTicket.id,
-                assunto: searchTicket.subject || '',
-                status_zendesk: searchTicket.status || '',
-                custom_status_id: searchTicket.custom_status_id || '',
-                grupo: '',
-                criado_em: searchTicket.created_at || '',
-                atualizado_em: searchTicket.updated_at || '',
-                comentarios: '',
-                url: `${BASE}/agent/tickets/${searchTicket.id}`,
-                query_origem: sourceLabel,
-                arquivo: '',
-                erro: error.message
-            };
+            const errorRow = errorManifestRow(searchTicket, sourceLabel, row, error);
             errorRows.push(errorRow);
-            state.failures[String(searchTicket.id)] = errorRow;
+            state.records[ticketKey] = errorRow;
             try {
-                await saveState(progressKey, state);
+                await enqueueStateSave(progressKey, state);
             } catch (stateError) {
                 log(`Aviso: não foi possível registrar a falha do ticket #${searchTicket.id}: ${stateError.message}`);
             }
             log(`ERRO no ticket #${searchTicket.id}: ${error.message}`);
-            await sleep(DOWNLOAD_DELAY_MS);
-            return false;
+            return { success: false, createdFiles };
         }
+    }
+
+    async function runTicketPool(items, concurrency, worker) {
+        let nextIndex = 0;
+        let fatalError = null;
+        let successfulTickets = 0;
+        let createdFiles = 0;
+
+        const runner = async () => {
+            while (!cancelRequested && !fatalError) {
+                const index = nextIndex;
+                nextIndex += 1;
+                if (index >= items.length) return;
+                try {
+                    const result = await worker(items[index], index);
+                    if (result.success) successfulTickets += 1;
+                    createdFiles += result.createdFiles;
+                } catch (error) {
+                    fatalError = error;
+                }
+            }
+        };
+
+        const workerCount = Math.min(concurrency, items.length);
+        await Promise.all(Array.from({ length: workerCount }, () => runner()));
+        return { fatalError, successfulTickets, createdFiles };
     }
 
     async function startExport() {
         if (running) return;
-        if (typeof (window.jspdf?.jsPDF || window.jsPDF) !== 'function') {
+        const formatSelection = document.querySelector('#attus-zdexp-format').value;
+        const requestedFormats = formatsForSelection(formatSelection);
+        if (requestedFormats.includes('pdf')
+            && typeof (window.jspdf?.jsPDF || window.jsPDF) !== 'function') {
             log('ERRO: a biblioteca de PDF não foi carregada. Recarregue a página e tente novamente.');
             return;
         }
@@ -1043,8 +1348,15 @@
         setRunningUi(true);
         const limit = Math.max(0, Number(document.querySelector('#attus-zdexp-limit').value || 0));
         const resume = document.querySelector('#attus-zdexp-resume').checked;
+        const requestedConcurrency = Math.floor(Number(
+            document.querySelector('#attus-zdexp-concurrency').value || DEFAULT_CONCURRENCY
+        ));
+        const concurrency = Number.isFinite(requestedConcurrency)
+            ? Math.min(MAX_CONCURRENCY, Math.max(MIN_CONCURRENCY, requestedConcurrency))
+            : DEFAULT_CONCURRENCY;
 
         try {
+            progressWriteChain = Promise.resolve();
             const outputDirectory = await ensureOutputDirectory();
             if (!outputDirectory) throw new Error('Seleção da pasta de saída cancelada.');
             log('Validando a sessão existente do Chrome...');
@@ -1075,16 +1387,22 @@
 
             const state = await loadState(progressKey);
             if (!resume) {
-                state.completed = {};
-                state.failures = {};
+                state.records = {};
                 await saveState(progressKey, state);
             }
-            const pending = tickets.filter(ticket => !state.completed[String(ticket.id)]);
+            const pending = tickets.filter(ticket =>
+                !recordHasFormats(state.records[String(ticket.id)], requestedFormats)
+            );
             const skipped = tickets.length - pending.length;
             log(`${tickets.length} ticket(s) selecionado(s); ${skipped} já concluído(s); ${pending.length} pendente(s).`);
+            const ticketOrder = new Map(tickets.map((ticket, index) => [String(ticket.id), index]));
+            const manifestRows = () => Object.values(state.records).sort((a, b) =>
+                (ticketOrder.get(String(a.id)) ?? Number.MAX_SAFE_INTEGER)
+                - (ticketOrder.get(String(b.id)) ?? Number.MAX_SAFE_INTEGER)
+            );
 
             if (!pending.length) {
-                const allRows = [...Object.values(state.completed), ...Object.values(state.failures)];
+                const allRows = manifestRows();
                 if (allRows.length) {
                     await saveBlobToDirectory(
                         new Blob([createManifestCsv(allRows)], { type: 'text/csv;charset=utf-8' }),
@@ -1095,39 +1413,45 @@
                 return;
             }
 
-            log(`Iniciando a gravação de ${pending.length} PDF(s) em "${outputDirectory.name}" sem perguntas por arquivo.`);
+            const formatLabel = requestedFormats.length === 2
+                ? 'PDF + Markdown'
+                : requestedFormats[0] === 'pdf' ? 'PDF' : 'Markdown';
+            log(
+                `Iniciando ${pending.length} ticket(s) em ${formatLabel}, com `
+                + `${concurrency} processo(s) simultâneo(s), na pasta "${outputDirectory.name}".`
+            );
 
             const errorRows = [];
-            let successfulThisRun = 0;
-            let fatalError = null;
-            for (let index = 0; index < pending.length; index += 1) {
-                if (cancelRequested) break;
-                try {
-                    const succeeded = await exportTicket(
-                        pending[index], index, pending.length, includePrivate,
-                        sourceLabel, progressKey, state, errorRows
-                    );
-                    if (succeeded) successfulThisRun += 1;
-                } catch (error) {
-                    fatalError = error;
-                    break;
-                }
-            }
+            const poolResult = await runTicketPool(
+                pending,
+                concurrency,
+                (ticket, index) => exportTicket(
+                    ticket, index, pending.length, includePrivate, requestedFormats,
+                    sourceLabel, progressKey, state, errorRows
+                )
+            );
+            await progressWriteChain.catch(() => undefined);
 
-            const allRows = [...Object.values(state.completed), ...Object.values(state.failures)];
+            const allRows = manifestRows();
             if (allRows.length) {
                 await saveBlobToDirectory(
                     new Blob([createManifestCsv(allRows)], { type: 'text/csv;charset=utf-8' }),
                     `zendesk-tickets-manifesto-${queryId(progressKey)}.csv`
                 );
             }
-            if (fatalError) throw fatalError;
+            if (poolResult.fatalError) throw poolResult.fatalError;
             if (cancelRequested) {
-                log('Exportação interrompida. Os PDFs concluídos foram salvos e podem ser retomados.');
+                log('Exportação interrompida. Os arquivos concluídos foram salvos e podem ser retomados.');
             } else if (errorRows.length) {
-                log(`Concluído com alertas: ${successfulThisRun} PDF(s) salvo(s) e ${errorRows.length} erro(s) nesta execução.`);
+                log(
+                    `Concluído com alertas: ${poolResult.successfulTickets} ticket(s), `
+                    + `${poolResult.createdFiles} arquivo(s) novo(s) e ${errorRows.length} erro(s).`
+                );
             } else {
-                log(`Concluído: ${successfulThisRun} PDF(s) salvo(s) nesta execução.`);
+                log(
+                    `Concluído: ${poolResult.successfulTickets} ticket(s) e `
+                    + `${poolResult.createdFiles} arquivo(s) novo(s) nesta execução.`
+                );
             }
         } catch (error) {
             log(`ERRO: ${error.message}`);
@@ -1156,6 +1480,8 @@
         document.querySelector('#attus-zdexp-query').disabled = isRunning;
         document.querySelector('#attus-zdexp-ticket-list').disabled = isRunning;
         document.querySelector('#attus-zdexp-file').disabled = isRunning;
+        document.querySelector('#attus-zdexp-format').disabled = isRunning;
+        document.querySelector('#attus-zdexp-concurrency').disabled = isRunning;
         document.querySelector('#attus-zdexp-cancel').disabled = !isRunning;
     }
 
@@ -1172,7 +1498,7 @@
         panel.innerHTML = `
             <button id="attus-zdexp-close" type="button" title="Fechar">×</button>
             <h2>Extrator de Tickets</h2>
-            <p>Gera PDFs pesquisáveis usando uma query ou uma lista direta de tickets.</p>
+            <p>Gera arquivos PDF, Markdown ou ambos usando uma query ou uma lista direta de tickets.</p>
             <div class="attus-zdexp-grid">
                 <label>Query da coleta (opcional quando houver lista)
                     <textarea id="attus-zdexp-query" spellcheck="false"></textarea>
@@ -1186,11 +1512,21 @@
                 <label>Limite de teste
                     <input id="attus-zdexp-limit" type="number" min="0" step="1" placeholder="0 = todos" value="0">
                 </label>
+                <label>Formato de saída
+                    <select id="attus-zdexp-format">
+                        <option value="pdf">PDF</option>
+                        <option value="md">Markdown</option>
+                        <option value="both">PDF + Markdown</option>
+                    </select>
+                </label>
+                <label>Processos simultâneos
+                    <input id="attus-zdexp-concurrency" type="number" min="1" max="6" step="1" value="3">
+                </label>
             </div>
             <label class="attus-zdexp-check"><input id="attus-zdexp-private" type="checkbox" checked> Incluir notas internas</label>
-            <label class="attus-zdexp-check"><input id="attus-zdexp-resume" type="checkbox" checked> Retomar e pular PDFs já concluídos</label>
+            <label class="attus-zdexp-check"><input id="attus-zdexp-resume" type="checkbox" checked> Retomar e pular formatos já concluídos</label>
             <p id="attus-zdexp-folder">Nenhuma pasta selecionada.</p>
-            <p class="attus-zdexp-note">Quando houver uma lista, ela terá prioridade e a query será ignorada. O progresso é separado conforme a inclusão de notas internas. Arraste a borda inferior direita para redimensionar esta janela.</p>
+            <p class="attus-zdexp-note">Quando houver uma lista, ela terá prioridade. O progresso controla PDF e Markdown separadamente e respeita a inclusão de notas internas. A concorrência é pausada automaticamente ao se aproximar do limite da API.</p>
             <div class="attus-zdexp-actions">
                 <button id="attus-zdexp-select-folder" type="button">Selecionar pasta</button>
                 <button id="attus-zdexp-start" class="primary" type="button">Iniciar exportação</button>
