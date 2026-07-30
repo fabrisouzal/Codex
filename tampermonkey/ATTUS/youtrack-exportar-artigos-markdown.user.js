@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTrack ATT - Exportar Artigos
 // @namespace    https://youtrack.attus.ai/
-// @version      2026.07.29.01
+// @version      2026.07.29.02
 // @description  Exporta todos os artigos acessiveis de um projeto do YouTrack para arquivos Markdown ou PDF e baixa seus anexos.
 // @author       ATTUS
 // @match        https://youtrack.attus.ai/articles/*
@@ -17,8 +17,11 @@
     'use strict';
 
     const DEFAULT_PROJECT = 'ATT';
+    const DEFAULT_WORKERS = 4;
+    const MAX_WORKERS = 8;
     const PAGE_SIZE = 100;
     const REQUEST_DELAY_MS = 80;
+    const MAX_REQUEST_RETRIES = 4;
     const MAX_ARTICLES = 20000;
 
     let running = false;
@@ -50,7 +53,7 @@
         #attus-ytmd-panel label.field {
             display: flex; flex-direction: column; gap: 4px; margin-top: 12px; font-weight: 600;
         }
-        #attus-ytmd-project, #attus-ytmd-token, #attus-ytmd-format {
+        #attus-ytmd-project, #attus-ytmd-token, #attus-ytmd-format, #attus-ytmd-workers {
             padding: 8px; border: 1px solid #aebdca; border-radius: 5px; font: inherit;
             background: #fff; color: #172b4d;
         }
@@ -98,6 +101,63 @@
         return String(value || '').trim().replace(/^Bearer\s+/i, '');
     }
 
+    function normalizeWorkerCount(value) {
+        const parsed = Number.parseInt(value, 10);
+        if (!Number.isFinite(parsed)) return DEFAULT_WORKERS;
+        return Math.max(1, Math.min(MAX_WORKERS, parsed));
+    }
+
+    async function runWorkerPool(items, workerCount, handler) {
+        if (!items.length) return;
+        let nextIndex = 0;
+        let firstError = null;
+
+        const workerLoop = async () => {
+            while (!firstError) {
+                let index;
+                try {
+                    checkCancelled();
+                    index = nextIndex;
+                    nextIndex += 1;
+                    if (index >= items.length) return;
+                    await handler(items[index], index);
+                } catch (error) {
+                    if (!firstError) firstError = error;
+                    return;
+                }
+            }
+        };
+
+        const activeWorkers = Math.min(normalizeWorkerCount(workerCount), items.length);
+        await Promise.all(Array.from({ length: activeWorkers }, () => workerLoop()));
+        if (firstError) throw firstError;
+        checkCancelled();
+    }
+
+    async function fetchWithRetry(url, options, label) {
+        for (let attempt = 0; attempt <= MAX_REQUEST_RETRIES; attempt += 1) {
+            checkCancelled();
+            try {
+                const response = await fetch(url, options);
+                const retryable = response.status === 429 || response.status >= 500;
+                if (!retryable || attempt === MAX_REQUEST_RETRIES) return response;
+
+                const retryAfterSeconds = Number(response.headers.get('Retry-After'));
+                const delay = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+                    ? retryAfterSeconds * 1000
+                    : Math.min(8000, 500 * (2 ** attempt));
+                log(`${label}: HTTP ${response.status}; nova tentativa em ${Math.ceil(delay / 1000)}s.`);
+                await sleep(delay);
+            } catch (error) {
+                if (attempt === MAX_REQUEST_RETRIES) throw error;
+                const delay = Math.min(8000, 500 * (2 ** attempt));
+                log(`${label}: falha de rede; nova tentativa em ${Math.ceil(delay / 1000)}s.`);
+                await sleep(delay);
+            }
+        }
+        throw new Error(`${label}: numero maximo de tentativas excedido.`);
+    }
+
     function sanitizeName(value, maxLength = 120) {
         let name = String(value || '')
             .normalize('NFKC')
@@ -139,14 +199,14 @@
             if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
         }
 
-        const response = await fetch(url, {
+        const response = await fetchWithRetry(url, {
             method: 'GET',
             credentials: 'include',
             headers: {
                 Accept: 'application/json',
                 Authorization: `Bearer ${activeToken}`,
             },
-        });
+        }, `API ${url.pathname}`);
 
         if (response.status === 401) {
             throw new Error('Token recusado pela API (401). Gere um token permanente com o escopo YouTrack e tente novamente.');
@@ -581,10 +641,10 @@
 
     async function downloadAttachment(article, attachment, destinationDirectory) {
         const url = new URL(attachment.url, location.origin);
-        const response = await fetch(url, {
+        const response = await fetchWithRetry(url, {
             credentials: 'include',
             headers: { Authorization: `Bearer ${activeToken}` },
-        });
+        }, `Anexo ${attachment.name || attachment.id}`);
         if (!response.ok) throw new Error(`HTTP ${response.status} ao baixar ${attachment.name}`);
         await writeFile(destinationDirectory, attachmentFileName(article, attachment), await response.blob());
     }
@@ -600,6 +660,8 @@
         const token = normalizeToken(document.getElementById('attus-ytmd-token').value);
         const exportFormat = document.getElementById('attus-ytmd-format').value === 'pdf' ? 'pdf' : 'md';
         const formatLabel = exportFormat === 'pdf' ? 'PDF' : 'Markdown';
+        const workerCount = normalizeWorkerCount(document.getElementById('attus-ytmd-workers').value);
+        document.getElementById('attus-ytmd-workers').value = String(workerCount);
         const includeAttachments = document.getElementById('attus-ytmd-attachments').checked;
         if (!project) {
             alert('Informe a sigla do projeto, por exemplo ATT.');
@@ -629,7 +691,7 @@
         document.getElementById('attus-ytmd-status').textContent = '';
 
         try {
-            log(`Exportacao do projeto ${project} em ${formatLabel} iniciada.`);
+            log(`Exportacao do projeto ${project} em ${formatLabel} iniciada com ${workerCount} trabalhador(es).`);
             const articles = await fetchAllArticles(project);
             if (articles.length === 0) {
                 throw new Error(`Nenhum artigo acessivel foi encontrado no projeto ${project}.`);
@@ -647,11 +709,12 @@
                 );
             }
 
-            const manifest = [];
+            const sortedArticles = [...articles].sort(sortArticles);
+            const manifest = new Array(sortedArticles.length);
             let completed = 0;
             let failedAttachments = 0;
 
-            for (const article of [...articles].sort(sortArticles)) {
+            await runWorkerPool(sortedArticles, workerCount, async (article, articleIndex) => {
                 checkCancelled();
                 const attachments = await fetchAttachments(article);
                 const fileName = fileNameById.get(article.id);
@@ -674,7 +737,7 @@
                     }
                 }
 
-                manifest.push({
+                manifest[articleIndex] = {
                     id: article.idReadable,
                     title: article.summary || '',
                     source: articleUrl(article),
@@ -683,11 +746,11 @@
                     format: exportFormat,
                     attachments: attachments.length,
                     updated: isoDate(article.updated),
-                });
+                };
                 completed += 1;
                 log(`${completed}/${articles.length} - ${article.idReadable} salvo.`);
                 await sleep(REQUEST_DELAY_MS);
-            }
+            });
 
             await writeFile(exportRoot, 'README.md', buildIndex(project, articles, fileNameById, formatLabel));
             await writeFile(exportRoot, 'manifest.json', JSON.stringify({
@@ -696,7 +759,8 @@
                 exportedAt: new Date().toISOString(),
                 source: `${location.origin}/articles/${encodeURIComponent(project)}`,
                 articleCount: articles.length,
-                articles: manifest,
+                workers: workerCount,
+                articles: manifest.filter(Boolean),
             }, null, 2));
 
             log(`Concluido: ${completed} artigos em ${formatLabel} salvos.`);
@@ -723,6 +787,7 @@
         document.getElementById('attus-ytmd-project').disabled = isRunning;
         document.getElementById('attus-ytmd-token').disabled = isRunning;
         document.getElementById('attus-ytmd-format').disabled = isRunning;
+        document.getElementById('attus-ytmd-workers').disabled = isRunning;
         document.getElementById('attus-ytmd-attachments').disabled = isRunning;
         document.getElementById('attus-ytmd-cancel').disabled = !isRunning;
     }
@@ -754,6 +819,10 @@
                 </select>
             </label>
             <label class="field">
+                Trabalhadores simultaneos
+                <input id="attus-ytmd-workers" type="number" min="1" max="${MAX_WORKERS}" step="1" value="${DEFAULT_WORKERS}">
+            </label>
+            <label class="field">
                 Token permanente do YouTrack
                 <input id="attus-ytmd-token" type="password" placeholder="perm:..." autocomplete="new-password" spellcheck="false">
             </label>
@@ -761,7 +830,7 @@
                 <input id="attus-ytmd-attachments" type="checkbox" checked>
                 Baixar anexos e ajustar as referencias
             </label>
-            <p class="attus-ytmd-note">O PDF mantem texto pesquisavel, titulos, listas, links e blocos de codigo. Crie o token em Perfil &gt; Seguranca da conta &gt; Tokens, com o escopo YouTrack. O token nao e salvo e e removido da memoria ao terminar.</p>
+            <p class="attus-ytmd-note">Use 4 trabalhadores como padrao. Valores maiores aceleram rede e anexos, mas podem sofrer limitacao do servidor. O PDF mantem texto pesquisavel, titulos, listas, links e blocos de codigo. O token nao e salvo e e removido da memoria ao terminar.</p>
             <div class="attus-ytmd-actions">
                 <button id="attus-ytmd-start" class="primary" type="button">Escolher pasta e exportar</button>
                 <button id="attus-ytmd-cancel" class="danger" type="button" disabled>Cancelar</button>
