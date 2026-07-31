@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Zendesk - Exportar Artigos do Help Center
 // @namespace    https://attus-ai.zendesk.com/
-// @version      2026.07.30.01
-// @description  Exporta todos os artigos visíveis do Zendesk Help Center para PDFs pesquisáveis, organizados por categoria e seção.
+// @version      2026.07.30.02
+// @description  Exporta todos os artigos visíveis do Zendesk Help Center para PDF, Markdown ou ambos, com até 8 workers.
 // @author       ATTUS
 // @match        https://attus-ai.zendesk.com/agent/*
 // @match        https://attus-ai.zendesk.com/hc/*
@@ -22,6 +22,9 @@
     const REQUEST_DELAY_MS = 180;
     const MAX_RETRIES = 5;
     const RATE_LIMIT_RESERVE = 10;
+    const MIN_WORKERS = 1;
+    const MAX_WORKERS = 8;
+    const DEFAULT_WORKERS = 4;
     const HANDLE_DB = 'attus-zendesk-help-center-export';
     const HANDLE_DB_VERSION = 1;
     const HANDLE_STORE = 'handles';
@@ -400,6 +403,150 @@
         return blocks;
     }
 
+    function markdownText(value) {
+        return String(value || '')
+            .replace(/\u00a0/g, ' ')
+            .replace(/\\/g, '\\\\')
+            .replace(/([*_`])/g, '\\$1');
+    }
+
+    function markdownUrl(value) {
+        return String(value || '').replace(/([\\()])/g, '\\$1');
+    }
+
+    function markdownInline(node) {
+        if (node.nodeType === Node.TEXT_NODE) return markdownText(node.nodeValue);
+        if (node.nodeType !== Node.ELEMENT_NODE) return '';
+        const tag = node.tagName.toLowerCase();
+        const children = [...node.childNodes].map(markdownInline).join('');
+        if (tag === 'br') return '\n';
+        if (tag === 'strong' || tag === 'b') return `**${children.trim()}**`;
+        if (tag === 'em' || tag === 'i') return `*${children.trim()}*`;
+        if (tag === 'code') return `\`${String(node.textContent || '').replace(/`/g, '\\`')}\``;
+        if (tag === 'a') {
+            const href = safeHttpUrl(node.getAttribute('href'));
+            const label = children.trim() || href;
+            return href ? `[${label}](${markdownUrl(href)})` : label;
+        }
+        if (tag === 'img') {
+            const source = safeHttpUrl(node.getAttribute('src'));
+            const alt = markdownText(node.getAttribute('alt') || 'Imagem');
+            return source ? `![${alt}](${markdownUrl(source)})` : '';
+        }
+        return children;
+    }
+
+    function markdownTable(table) {
+        const rows = [...table.querySelectorAll('tr')].map(row =>
+            [...row.querySelectorAll(':scope > th, :scope > td')].map(cell =>
+                markdownInline(cell).replace(/\s+/g, ' ').trim().replace(/\|/g, '\\|')
+            )
+        ).filter(cells => cells.length);
+        if (!rows.length) return '';
+        const width = Math.max(...rows.map(row => row.length));
+        const normalized = rows.map(row => [
+            ...row,
+            ...Array(Math.max(0, width - row.length)).fill('')
+        ]);
+        return [
+            `| ${normalized[0].join(' | ')} |`,
+            `| ${Array(width).fill('---').join(' | ')} |`,
+            ...normalized.slice(1).map(row => `| ${row.join(' | ')} |`)
+        ].join('\n');
+    }
+
+    function htmlToMarkdown(body) {
+        const root = document.createElement('div');
+        root.innerHTML = String(body || '');
+        root.querySelectorAll('script, style, iframe, object, embed, form, link, meta').forEach(node => node.remove());
+
+        function convert(node, listDepth = 0) {
+            if (node.nodeType === Node.TEXT_NODE) return markdownText(node.nodeValue);
+            if (node.nodeType !== Node.ELEMENT_NODE) return '';
+            const tag = node.tagName.toLowerCase();
+            const children = () => [...node.childNodes].map(child => convert(child, listDepth)).join('');
+
+            if (/^h[1-6]$/.test(tag)) {
+                return `\n\n${'#'.repeat(Number(tag.slice(1)))} ${markdownInline(node).trim()}\n\n`;
+            }
+            if (tag === 'p' || tag === 'div' || tag === 'section' || tag === 'article') {
+                return `\n\n${children().trim()}\n\n`;
+            }
+            if (tag === 'br') return '\n';
+            if (tag === 'hr') return '\n\n---\n\n';
+            if (tag === 'pre') {
+                return `\n\n\`\`\`\n${String(node.textContent || '').trim()}\n\`\`\`\n\n`;
+            }
+            if (tag === 'blockquote') {
+                const quote = children().trim().split(/\r?\n/).map(line => `> ${line}`).join('\n');
+                return `\n\n${quote}\n\n`;
+            }
+            if (tag === 'table') return `\n\n${markdownTable(node)}\n\n`;
+            if (tag === 'ul' || tag === 'ol') {
+                const ordered = tag === 'ol';
+                const items = [...node.children].filter(child => child.tagName === 'LI');
+                return `\n${items.map((item, index) => {
+                    const nestedLists = [...item.children].filter(child => ['UL', 'OL'].includes(child.tagName));
+                    const clone = item.cloneNode(true);
+                    clone.querySelectorAll(':scope > ul, :scope > ol').forEach(child => child.remove());
+                    const prefix = ordered ? `${index + 1}.` : '-';
+                    const indent = '  '.repeat(listDepth);
+                    const content = markdownInline(clone).replace(/\s+/g, ' ').trim();
+                    const nested = nestedLists.map(child => convert(child, listDepth + 1)).join('');
+                    return `${indent}${prefix} ${content}${nested}`;
+                }).join('\n')}\n`;
+            }
+            if (tag === 'li') return markdownInline(node);
+            if (tag === 'strong' || tag === 'b' || tag === 'em' || tag === 'i'
+                || tag === 'code' || tag === 'a' || tag === 'img') {
+                return markdownInline(node);
+            }
+            return children();
+        }
+
+        return [...root.childNodes]
+            .map(node => convert(node))
+            .join('')
+            .replace(/[ \t]+\n/g, '\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+    }
+
+    function yamlValue(value) {
+        return JSON.stringify(String(value ?? ''));
+    }
+
+    function renderArticleMarkdown(article, locale) {
+        const exportedAt = new Date().toISOString();
+        const body = htmlToMarkdown(article.body);
+        return [
+            '---',
+            'schema_version: 1',
+            `document_id: ${yamlValue(`zendesk_help_center_article:${article.id}`)}`,
+            'source_type: zendesk_help_center_article',
+            `title: ${yamlValue(article.title)}`,
+            `language: ${yamlValue(locale)}`,
+            `grupo: ${yamlValue(`Zendesk / ${article.category}`)}`,
+            `category: ${yamlValue(article.category)}`,
+            `section: ${yamlValue(article.section)}`,
+            `source_url: ${yamlValue(article.htmlUrl)}`,
+            `updated_at: ${yamlValue(article.updatedAt)}`,
+            `exportado_em: ${yamlValue(exportedAt)}`,
+            'tags: ["zendesk", "help-center"]',
+            '---',
+            '',
+            `# ${article.title}`,
+            '',
+            `> **Categoria:** ${article.category}  `,
+            `> **Seção:** ${article.section}  `,
+            `> **Atualizado em:** ${formatDate(article.updatedAt)}  `,
+            `> **Fonte:** [Abrir artigo original no Zendesk](${markdownUrl(article.htmlUrl)})`,
+            '',
+            body || '_Artigo sem conteúdo textual._',
+            ''
+        ].join('\n');
+    }
+
     function imageBlobToAsset(blob) {
         return new Promise((resolve, reject) => {
             const objectUrl = URL.createObjectURL(blob);
@@ -733,7 +880,8 @@
     function createManifestCsv(rows) {
         const fields = [
             'id', 'titulo', 'categoria', 'secao', 'url', 'atualizado_em',
-            'status', 'arquivo', 'imagens_total', 'imagens_incorporadas', 'erro'
+            'formatos_solicitados', 'status', 'status_pdf', 'status_markdown',
+            'arquivo_pdf', 'arquivo_markdown', 'imagens_total', 'imagens_incorporadas', 'erro'
         ];
         return `\uFEFF${[
             fields.join(';'),
@@ -741,13 +889,46 @@
         ].join('\r\n')}\r\n`;
     }
 
-    function articleFilename(article) {
-        return `${article.id}-${safeFilename(article.title)}.pdf`;
+    function formatsForSelection(value) {
+        if (value === 'both') return ['pdf', 'markdown'];
+        return value === 'markdown' ? ['markdown'] : ['pdf'];
+    }
+
+    function normalizeWorkerCount(value) {
+        const parsed = Math.floor(Number(value));
+        if (!Number.isFinite(parsed)) return DEFAULT_WORKERS;
+        return Math.max(MIN_WORKERS, Math.min(MAX_WORKERS, parsed));
+    }
+
+    async function runWorkerPool(items, workerCount, handler) {
+        let cursor = 0;
+        async function worker() {
+            while (true) {
+                checkCancelled();
+                const index = cursor;
+                cursor += 1;
+                if (index >= items.length) return;
+                await handler(items[index], index);
+                await sleep(REQUEST_DELAY_MS);
+            }
+        }
+        const count = Math.min(workerCount, items.length);
+        const results = await Promise.allSettled(Array.from({ length: count }, () => worker()));
+        const rejection = results.find(result => result.status === 'rejected');
+        if (rejection) throw rejection.reason;
+    }
+
+    function articleFilename(article, format) {
+        const extension = format === 'markdown' ? 'md' : 'pdf';
+        return `${article.id}-${safeFilename(article.title)}.${extension}`;
     }
 
     async function startExport() {
         if (running) return;
-        if (typeof (window.jspdf?.jsPDF || window.jsPDF) !== 'function') {
+        const formatSelection = document.querySelector('#attus-zdhc-format').value;
+        const requestedFormats = formatsForSelection(formatSelection);
+        if (requestedFormats.includes('pdf')
+            && typeof (window.jspdf?.jsPDF || window.jsPDF) !== 'function') {
             log('ERRO: a biblioteca de PDF não foi carregada. Recarregue a página e tente novamente.');
             return;
         }
@@ -761,6 +942,8 @@
         }
         const limit = Math.max(0, Math.floor(Number(document.querySelector('#attus-zdhc-limit').value || 0)));
         const overwrite = document.querySelector('#attus-zdhc-overwrite').checked;
+        const workerCount = normalizeWorkerCount(document.querySelector('#attus-zdhc-workers').value);
+        document.querySelector('#attus-zdhc-workers').value = String(workerCount);
 
         running = true;
         cancelRequested = false;
@@ -776,21 +959,42 @@
             if (limit > 0) articles = articles.slice(0, limit);
             if (!articles.length) throw new Error('Nenhum artigo visível foi retornado pela API.');
 
-            const outputRoot = await getSubdirectory(selectedDirectory, `Zendesk-Help-Center-${locale}-PDF`);
-            const manifestRows = [];
-            let exported = 0;
-            let skipped = 0;
-            let failed = 0;
+            const formatFolder = formatSelection === 'both'
+                ? 'PDF-Markdown'
+                : formatSelection === 'markdown' ? 'Markdown' : 'PDF';
+            const outputFolderName = `Zendesk-Help-Center-${locale}-${formatFolder}`;
+            const outputRoot = await getSubdirectory(selectedDirectory, outputFolderName);
+            const manifestRows = new Array(articles.length);
+            let manifestWriteChain = Promise.resolve();
+            let createdFiles = 0;
+            let skippedFiles = 0;
+            let failedFiles = 0;
             let imageWarnings = 0;
 
-            log(`${articles.length} artigo(s) selecionado(s). Iniciando os PDFs...`);
-            for (let index = 0; index < articles.length; index += 1) {
+            const saveManifest = () => {
+                const snapshot = manifestRows.filter(Boolean);
+                manifestWriteChain = manifestWriteChain.then(() => writeFile(
+                    outputRoot,
+                    'manifesto.csv',
+                    new Blob([createManifestCsv(snapshot)], { type: 'text/csv;charset=utf-8' })
+                ));
+                return manifestWriteChain;
+            };
+
+            const formatLabel = requestedFormats.length === 2
+                ? 'PDF + Markdown'
+                : requestedFormats[0] === 'markdown' ? 'Markdown' : 'PDF';
+            log(
+                `${articles.length} artigo(s) selecionado(s). Iniciando ${formatLabel} `
+                + `com ${workerCount} worker(s)...`
+            );
+
+            await runWorkerPool(articles, workerCount, async (article, index) => {
                 checkCancelled();
-                const article = articles[index];
-                const categoryDirectory = await getSubdirectory(outputRoot, article.category);
-                const sectionDirectory = await getSubdirectory(categoryDirectory, article.section);
-                const filename = articleFilename(article);
-                const relativePath = `${safeFilename(article.category, 100)}/${safeFilename(article.section, 100)}/${filename}`;
+                const categoryName = safeFilename(article.category, 100);
+                const sectionName = safeFilename(article.section, 100);
+                const pdfFilename = articleFilename(article, 'pdf');
+                const markdownFilename = articleFilename(article, 'markdown');
                 const row = {
                     id: article.id,
                     titulo: article.title,
@@ -798,56 +1002,116 @@
                     secao: article.section,
                     url: article.htmlUrl,
                     atualizado_em: article.updatedAt,
+                    formatos_solicitados: formatLabel,
                     status: '',
-                    arquivo: relativePath,
+                    status_pdf: requestedFormats.includes('pdf') ? 'PENDENTE' : 'NAO_SOLICITADO',
+                    status_markdown: requestedFormats.includes('markdown') ? 'PENDENTE' : 'NAO_SOLICITADO',
+                    arquivo_pdf: requestedFormats.includes('pdf')
+                        ? `${categoryName}/${sectionName}/${pdfFilename}`
+                        : '',
+                    arquivo_markdown: requestedFormats.includes('markdown')
+                        ? `${categoryName}/${sectionName}/${markdownFilename}`
+                        : '',
                     imagens_total: 0,
                     imagens_incorporadas: 0,
                     erro: ''
                 };
-
+                const errors = [];
                 try {
-                    if (!overwrite && await fileExists(sectionDirectory, filename)) {
-                        skipped += 1;
-                        row.status = 'PULADO_JA_EXISTE';
-                        log(`[PULADO] ${index + 1}/${articles.length} - ${article.title}`);
-                    } else {
-                        const rendered = await renderArticlePdf(article);
-                        await writeFile(sectionDirectory, filename, rendered.blob);
-                        exported += 1;
-                        imageWarnings += rendered.imagesFailed;
-                        row.status = rendered.imagesFailed ? 'OK_COM_AVISO_DE_IMAGEM' : 'OK';
-                        row.imagens_total = rendered.imagesTotal;
-                        row.imagens_incorporadas = rendered.imagesEmbedded;
-                        log(
-                            `[OK] ${index + 1}/${articles.length} - ${article.title}`
-                            + (rendered.imagesFailed ? ` (${rendered.imagesFailed} imagem(ns) não incorporada(s))` : '')
-                        );
+                    const categoryDirectory = await getSubdirectory(outputRoot, article.category);
+                    const sectionDirectory = await getSubdirectory(categoryDirectory, article.section);
+
+                    if (requestedFormats.includes('pdf')) {
+                        try {
+                            if (!overwrite && await fileExists(sectionDirectory, pdfFilename)) {
+                                skippedFiles += 1;
+                                row.status_pdf = 'PULADO_JA_EXISTE';
+                            } else {
+                                const rendered = await renderArticlePdf(article);
+                                await writeFile(sectionDirectory, pdfFilename, rendered.blob);
+                                createdFiles += 1;
+                                imageWarnings += rendered.imagesFailed;
+                                row.status_pdf = rendered.imagesFailed ? 'OK_COM_AVISO_DE_IMAGEM' : 'OK';
+                                row.imagens_total = rendered.imagesTotal;
+                                row.imagens_incorporadas = rendered.imagesEmbedded;
+                            }
+                        } catch (error) {
+                            if (error?.message === 'EXPORT_CANCELLED') throw error;
+                            failedFiles += 1;
+                            row.status_pdf = 'ERRO';
+                            errors.push(`PDF: ${error?.message || error}`);
+                        }
+                    }
+
+                    if (requestedFormats.includes('markdown')) {
+                        try {
+                            if (!overwrite && await fileExists(sectionDirectory, markdownFilename)) {
+                                skippedFiles += 1;
+                                row.status_markdown = 'PULADO_JA_EXISTE';
+                            } else {
+                                await writeFile(
+                                    sectionDirectory,
+                                    markdownFilename,
+                                    new Blob(
+                                        [renderArticleMarkdown(article, locale)],
+                                        { type: 'text/markdown;charset=utf-8' }
+                                    )
+                                );
+                                createdFiles += 1;
+                                row.status_markdown = 'OK';
+                            }
+                        } catch (error) {
+                            if (error?.message === 'EXPORT_CANCELLED') throw error;
+                            failedFiles += 1;
+                            row.status_markdown = 'ERRO';
+                            errors.push(`Markdown: ${error?.message || error}`);
+                        }
                     }
                 } catch (error) {
                     if (error?.message === 'EXPORT_CANCELLED') throw error;
-                    failed += 1;
-                    row.status = 'ERRO';
-                    row.erro = String(error?.message || error);
-                    log(`[ERRO] ${index + 1}/${articles.length} - ${article.title}: ${row.erro}`);
+                    for (const format of requestedFormats) {
+                        const field = format === 'markdown' ? 'status_markdown' : 'status_pdf';
+                        if (row[field] === 'PENDENTE') {
+                            row[field] = 'ERRO';
+                            failedFiles += 1;
+                        }
+                    }
+                    errors.push(`Artigo: ${error?.message || error}`);
                 }
 
-                manifestRows.push(row);
-                await writeFile(
-                    outputRoot,
-                    'manifesto.csv',
-                    new Blob([createManifestCsv(manifestRows)], { type: 'text/csv;charset=utf-8' })
+                const statuses = requestedFormats.map(format =>
+                    row[format === 'markdown' ? 'status_markdown' : 'status_pdf']
                 );
-                await sleep(REQUEST_DELAY_MS);
-            }
+                row.erro = errors.join(' | ');
+                if (statuses.every(status => status === 'PULADO_JA_EXISTE')) {
+                    row.status = 'PULADO_JA_EXISTE';
+                } else if (statuses.every(status => status === 'ERRO')) {
+                    row.status = 'ERRO';
+                } else if (statuses.some(status => status === 'ERRO')) {
+                    row.status = 'ERRO_PARCIAL';
+                } else if (statuses.some(status => status === 'OK_COM_AVISO_DE_IMAGEM')) {
+                    row.status = 'OK_COM_AVISO_DE_IMAGEM';
+                } else {
+                    row.status = 'OK';
+                }
+
+                manifestRows[index] = row;
+                await saveManifest();
+                log(
+                    `[${row.status}] ${index + 1}/${articles.length} - ${article.title} `
+                    + `[PDF: ${row.status_pdf}; Markdown: ${row.status_markdown}]`
+                );
+            });
+            await manifestWriteChain;
 
             log(
-                `Concluído: ${exported} PDF(s) gerado(s), ${skipped} já existente(s), `
-                + `${failed} erro(s) e ${imageWarnings} aviso(s) de imagem.`
+                `Concluído: ${createdFiles} arquivo(s) gerado(s), ${skippedFiles} já existente(s), `
+                + `${failedFiles} erro(s) e ${imageWarnings} aviso(s) de imagem.`
             );
-            log(`Manifesto salvo em Zendesk-Help-Center-${locale}-PDF/manifesto.csv.`);
+            log(`Manifesto salvo em ${outputFolderName}/manifesto.csv.`);
         } catch (error) {
             if (error?.message === 'EXPORT_CANCELLED') {
-                log('Exportação cancelada. Os PDFs concluídos e o manifesto parcial foram mantidos.');
+                log('Exportação cancelada. Os arquivos concluídos e o manifesto parcial foram mantidos.');
             } else {
                 log(`ERRO: ${error?.message || error}`);
                 console.error('[Zendesk Help Center Export]', error);
@@ -873,6 +1137,8 @@
         document.querySelector('#attus-zdhc-select-folder').disabled = isRunning;
         document.querySelector('#attus-zdhc-locale').disabled = isRunning;
         document.querySelector('#attus-zdhc-limit').disabled = isRunning;
+        document.querySelector('#attus-zdhc-format').disabled = isRunning;
+        document.querySelector('#attus-zdhc-workers').disabled = isRunning;
         document.querySelector('#attus-zdhc-overwrite').disabled = isRunning;
         document.querySelector('#attus-zdhc-cancel').disabled = !isRunning;
     }
@@ -890,10 +1156,20 @@
         panel.innerHTML = `
             <button id="attus-zdhc-close" type="button" title="Fechar">×</button>
             <h2>Exportar artigos do Help Center</h2>
-            <p>Gera um PDF pesquisável para cada artigo visível na sessão atual do Zendesk.</p>
+            <p>Gera PDF, Markdown ou ambos para cada artigo visível na sessão atual do Zendesk.</p>
             <div class="attus-zdhc-grid">
                 <label>Idioma do Help Center
                     <input id="attus-zdhc-locale" type="text" value="${DEFAULT_LOCALE}" maxlength="12" spellcheck="false">
+                </label>
+                <label>Formato de saída
+                    <select id="attus-zdhc-format">
+                        <option value="pdf">PDF pesquisável</option>
+                        <option value="markdown">Markdown</option>
+                        <option value="both">PDF + Markdown</option>
+                    </select>
+                </label>
+                <label>Workers simultâneos
+                    <input id="attus-zdhc-workers" type="number" min="${MIN_WORKERS}" max="${MAX_WORKERS}" step="1" value="${DEFAULT_WORKERS}">
                 </label>
                 <label>Limite de teste
                     <input id="attus-zdhc-limit" type="number" min="0" step="1" value="0" placeholder="0 = todos">
@@ -905,8 +1181,9 @@
             </label>
             <p id="attus-zdhc-folder">Nenhuma pasta selecionada.</p>
             <p class="attus-zdhc-note">
-                A saída será organizada em categoria/seção e terá um manifesto CSV.
-                PDFs já existentes são pulados por padrão, permitindo retomar a exportação.
+                A saída será organizada em categoria/seção e terá um manifesto CSV por formato.
+                Arquivos já existentes são pulados por padrão, permitindo retomar cada formato separadamente.
+                Use até 8 workers; 4 é o padrão recomendado.
                 Recomenda-se testar primeiro com limite 1.
             </p>
             <div class="attus-zdhc-actions">
