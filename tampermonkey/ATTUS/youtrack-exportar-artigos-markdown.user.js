@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTrack ATT - Exportar Artigos
 // @namespace    https://youtrack.attus.ai/
-// @version      2026.07.30.02
-// @description  Exporta simultaneamente artigos de um ou varios projetos do YouTrack para Markdown vetorial ou PDF.
+// @version      2026.08.11.01
+// @description  Exporta artigos de um ou varios projetos diretamente para a pasta escolhida, sem criar subpastas.
 // @author       ATTUS
 // @match        https://youtrack.attus.ai/articles/*
 // @updateURL    https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/youtrack-exportar-artigos-markdown.user.js
@@ -210,7 +210,9 @@
     }
 
     function attachmentFileName(article, attachment) {
-        return sanitizeName(`${article.idReadable}_${attachment.name || attachment.id}`, 160);
+        const extensionMatch = String(attachment.name || '').match(/\.([A-Za-z0-9]{1,12})$/);
+        const extension = extensionMatch ? `.${extensionMatch[1].toLowerCase()}` : '';
+        return sanitizeName(`${article.idReadable}_anexo-${attachment.id || 'sem-id'}${extension}`, 160);
     }
 
     async function apiGet(path, params = {}) {
@@ -323,10 +325,6 @@
         }
     }
 
-    async function getSubdirectory(directoryHandle, name) {
-        return directoryHandle.getDirectoryHandle(sanitizeName(name, 100), { create: true });
-    }
-
     function replaceAttachmentUrls(content, attachments, article, articleAssetPath) {
         let output = String(content || '');
         for (const attachment of attachments) {
@@ -359,7 +357,7 @@
     function buildArticleMarkdown(article, attachments, fileNameById, articleById, downloadAttachments) {
         const parent = article.parentArticle;
         const parentFile = parent?.id ? fileNameById.get(parent.id) : null;
-        const assetPath = `../assets/${sanitizeName(article.idReadable, 60)}`;
+        const assetPath = '.';
         const project = article.project?.shortName || '';
         const title = article.summary || 'Sem titulo';
         const breadcrumb = buildArticleBreadcrumb(article, articleById);
@@ -452,7 +450,7 @@
 
         const title = article.summary || article.idReadable;
         const sourceUrl = articleUrl(article);
-        const assetPath = `../assets/${sanitizeName(article.idReadable, 60)}`;
+        const assetPath = '.';
         const content = downloadAttachments
             ? replaceAttachmentUrls(article.content, attachments, article, assetPath)
             : String(article.content || '');
@@ -693,7 +691,7 @@
             if (visited.has(article.id)) return;
             visited.add(article.id);
             const fileName = fileNameById.get(article.id);
-            lines.push(`${'  '.repeat(depth)}- [${article.idReadable} - ${article.summary || 'Sem titulo'}](${markdownHref(`articles/${fileName}`)})`);
+            lines.push(`${'  '.repeat(depth)}- [${article.idReadable} - ${article.summary || 'Sem titulo'}](${markdownHref(fileName)})`);
             for (const child of (children.get(article.id) || []).sort(sortArticles)) appendArticle(child, depth + 1);
         }
 
@@ -719,7 +717,7 @@
         for (const project of projects) {
             const context = projectContexts.get(project);
             if (!context) continue;
-            lines.push(`- [${project} - ${context.articles.length} artigos](${markdownHref(`${context.folderName}/README.md`)})`);
+            lines.push(`- [${project} - ${context.articles.length} artigos](${markdownHref(context.indexFileName)})`);
         }
         if (missingProjects.length) {
             lines.push('', '## Projetos sem artigos acessiveis', '');
@@ -797,35 +795,27 @@
             if (missingProjects.length) log(`Aviso: nenhum artigo acessivel em ${missingProjects.join(', ')}.`);
 
             const multipleProjects = projects.length > 1;
-            const outputFolderName = multipleProjects
-                ? `YouTrack-Multiplos-${formatLabel}`
-                : `YouTrack-${foundProjects[0]}-${formatLabel}`;
-            const outputRoot = await getSubdirectory(selectedDirectory, outputFolderName);
+            const outputRoot = selectedDirectory;
             const projectContexts = new Map();
             const jobs = [];
 
             for (const project of foundProjects) {
                 const articles = articlesByProject.get(project);
-                const folderName = `YouTrack-${project}-${formatLabel}`;
-                const exportRoot = multipleProjects
-                    ? await getSubdirectory(outputRoot, folderName)
-                    : outputRoot;
-                const articlesDirectory = await getSubdirectory(exportRoot, 'articles');
-                const assetsDirectory = includeAttachments ? await getSubdirectory(exportRoot, 'assets') : null;
                 const fileNameById = new Map();
                 for (const article of articles) {
                     fileNameById.set(
                         article.id,
-                        `${sanitizeName(`${article.idReadable} - ${article.summary || 'Sem titulo'}`, 150)}.${exportFormat}`,
+                        `${sanitizeName(article.idReadable, 120)}.${exportFormat}`,
                     );
                 }
                 const sortedArticles = [...articles].sort(sortArticles);
                 const context = {
                     project,
-                    folderName,
-                    exportRoot,
-                    articlesDirectory,
-                    assetsDirectory,
+                    exportRoot: outputRoot,
+                    articlesDirectory: outputRoot,
+                    assetsDirectory: outputRoot,
+                    indexFileName: `YouTrack-${project}-README.md`,
+                    manifestFileName: `YouTrack-${project}-manifest.json`,
                     articles,
                     articleById: new Map(articles.map((article) => [article.id, article])),
                     fileNameById,
@@ -858,11 +848,10 @@
                 await writeFile(context.articlesDirectory, fileName, articleFile);
 
                 if (includeAttachments && attachments.length) {
-                    const articleAssets = await getSubdirectory(context.assetsDirectory, article.idReadable);
                     for (const attachment of attachments) {
                         checkCancelled();
                         try {
-                            await downloadAttachment(article, attachment, articleAssets);
+                            await downloadAttachment(article, attachment, context.assetsDirectory);
                         } catch (error) {
                             failedAttachments += 1;
                             log(`Aviso: ${article.idReadable} / ${attachment.name}: ${error.message}`);
@@ -876,7 +865,7 @@
                     title: article.summary || '',
                     source: articleUrl(article),
                     parent: article.parentArticle?.idReadable || null,
-                    file: `articles/${fileName}`,
+                    file: fileName,
                     format: exportFormat,
                     attachments: attachments.length,
                     updated: isoDate(article.updated),
@@ -893,10 +882,10 @@
                 const context = projectContexts.get(project);
                 await writeFile(
                     context.exportRoot,
-                    'README.md',
+                    context.indexFileName,
                     buildIndex(project, context.articles, context.fileNameById, formatLabel),
                 );
-                await writeFile(context.exportRoot, 'manifest.json', JSON.stringify({
+                await writeFile(context.exportRoot, context.manifestFileName, JSON.stringify({
                     project,
                     format: exportFormat,
                     exportedAt,
@@ -912,10 +901,10 @@
             if (multipleProjects) {
                 await writeFile(
                     outputRoot,
-                    'README.md',
+                    'YouTrack-README.md',
                     buildMultiProjectIndex(projects, projectContexts, missingProjects, formatLabel),
                 );
-                await writeFile(outputRoot, 'manifest.json', JSON.stringify({
+                await writeFile(outputRoot, 'YouTrack-manifest.json', JSON.stringify({
                     projectsRequested: projects,
                     projectsExported: foundProjects,
                     projectsWithoutAccessibleArticles: missingProjects,
@@ -930,7 +919,8 @@
                         const context = projectContexts.get(project);
                         return {
                             project,
-                            folder: context.folderName,
+                            index: context.indexFileName,
+                            manifest: context.manifestFileName,
                             articleCount: context.articles.length,
                         };
                     }),
@@ -942,7 +932,7 @@
             const missingNotice = missingProjects.length
                 ? `\nSem artigos acessiveis: ${missingProjects.join(', ')}.`
                 : '';
-            alert(`Exportacao concluida.\n\n${completed} artigos de ${foundProjects.length} projeto(s) em ${formatLabel} salvos em ${outputFolderName}.${missingNotice}`);
+            alert(`Exportacao concluida.\n\n${completed} artigos de ${foundProjects.length} projeto(s) em ${formatLabel} salvos diretamente em ${selectedDirectory.name}.${missingNotice}`);
         } catch (error) {
             if (error?.message === 'EXPORT_CANCELLED') {
                 log('Exportacao cancelada pelo usuario. Os arquivos ja gravados foram mantidos.');
@@ -983,7 +973,7 @@
         panel.innerHTML = `
             <button id="attus-ytmd-close" type="button" title="Fechar">&times;</button>
             <h2>Exportar artigos do YouTrack</h2>
-            <p>Salva simultaneamente os artigos acessiveis de um ou varios projetos em Markdown vetorial ou PDF.</p>
+            <p>Salva simultaneamente os artigos acessiveis diretamente na pasta escolhida, sem criar subpastas.</p>
             <label class="field">
                 Siglas dos projetos
                 <textarea id="attus-ytmd-project" maxlength="1000" autocomplete="off" spellcheck="false" placeholder="ATT, PRD, INFRA">${DEFAULT_PROJECT}</textarea>
@@ -1008,7 +998,7 @@
                 <input id="attus-ytmd-attachments" type="checkbox" checked>
                 Baixar anexos e ajustar as referencias
             </label>
-            <p class="attus-ytmd-note">Os trabalhadores processam artigos de todos os projetos em paralelo. Cada projeto recebe pasta, indice e manifesto proprios. O Markdown inclui frontmatter compativel com o indexador ATTUS. Use 4 trabalhadores como padrao; valores maiores podem sofrer limitacao do servidor. O token nao e salvo.</p>
+            <p class="attus-ytmd-note">Todos os artigos, anexos, indices e manifestos ficam na mesma pasta. Os nomes usam IDs estaveis, portanto novas execucoes sobrescrevem os mesmos arquivos. Os trabalhadores processam todos os projetos em paralelo. O token nao e salvo.</p>
             <div class="attus-ytmd-actions">
                 <button id="attus-ytmd-start" class="primary" type="button">Escolher pasta e exportar</button>
                 <button id="attus-ytmd-cancel" class="danger" type="button" disabled>Cancelar</button>
