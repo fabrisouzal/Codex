@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTrack ATT - Exportar Artigos
 // @namespace    https://youtrack.attus.ai/
-// @version      2026.08.11.01
+// @version      2026.08.11.02
 // @description  Exporta artigos de um ou varios projetos diretamente para a pasta escolhida, sem criar subpastas.
 // @author       ATTUS
 // @match        https://youtrack.attus.ai/articles/*
@@ -24,10 +24,12 @@
     const MAX_REQUEST_RETRIES = 4;
     const MAX_ARTICLES = 20000;
     const MAX_PROJECTS = 50;
+    const SUGGESTED_PROJECTS = ['ATT', 'GD', 'BIA', 'INFRA', 'PLA', 'PRD', 'WOW'];
 
     let running = false;
     let cancelRequested = false;
     let activeToken = '';
+    let activeAbortController = null;
 
     GM_addStyle(`
         #attus-ytmd-open {
@@ -61,6 +63,21 @@
         #attus-ytmd-project {
             min-height: 58px; resize: vertical; text-transform: uppercase;
         }
+        .attus-ytmd-project-tools { display: flex; flex-wrap: wrap; gap: 6px; margin: 7px 0; }
+        .attus-ytmd-project-chip {
+            display: inline-flex; align-items: center; gap: 4px; padding: 5px 7px;
+            border: 1px solid #aebdca; border-radius: 14px; background: #f8fafc;
+            color: #243b53; font-weight: 600; cursor: pointer;
+        }
+        .attus-ytmd-project-chip:has(input:checked) {
+            border-color: #174ea6; background: #e8f0fe; color: #174ea6;
+        }
+        .attus-ytmd-project-commands { display: flex; gap: 6px; margin: 5px 0; }
+        .attus-ytmd-project-commands button {
+            border: 0; padding: 2px 0; background: transparent; color: #174ea6;
+            font: 600 11px/1.4 Arial, sans-serif; cursor: pointer;
+        }
+        .attus-ytmd-project-commands button + button { margin-left: 9px; }
         .attus-ytmd-check { display: flex; align-items: center; gap: 7px; margin: 10px 0; }
         .attus-ytmd-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
         .attus-ytmd-actions button {
@@ -78,8 +95,28 @@
         .attus-ytmd-note { color: #52606d; font-size: 11px; }
     `);
 
+    function cancellationError() {
+        return new Error('EXPORT_CANCELLED');
+    }
+
     function sleep(ms) {
-        return new Promise((resolve) => setTimeout(resolve, ms));
+        return new Promise((resolve, reject) => {
+            if (cancelRequested) {
+                reject(cancellationError());
+                return;
+            }
+            const signal = activeAbortController?.signal;
+            let timeoutId;
+            const onAbort = () => {
+                clearTimeout(timeoutId);
+                reject(cancellationError());
+            };
+            timeoutId = setTimeout(() => {
+                signal?.removeEventListener('abort', onAbort);
+                resolve();
+            }, ms);
+            signal?.addEventListener('abort', onAbort, { once: true });
+        });
     }
 
     function log(message) {
@@ -91,7 +128,7 @@
     }
 
     function checkCancelled() {
-        if (cancelRequested) throw new Error('EXPORT_CANCELLED');
+        if (cancelRequested) throw cancellationError();
     }
 
     function normalizeProject(value) {
@@ -152,7 +189,10 @@
         for (let attempt = 0; attempt <= MAX_REQUEST_RETRIES; attempt += 1) {
             checkCancelled();
             try {
-                const response = await fetch(url, options);
+                const response = await fetch(url, {
+                    ...options,
+                    signal: activeAbortController?.signal,
+                });
                 const retryable = response.status === 429 || response.status >= 500;
                 if (!retryable || attempt === MAX_REQUEST_RETRIES) return response;
 
@@ -163,6 +203,7 @@
                 log(`${label}: HTTP ${response.status}; nova tentativa em ${Math.ceil(delay / 1000)}s.`);
                 await sleep(delay);
             } catch (error) {
+                if (cancelRequested || error?.name === 'AbortError') throw cancellationError();
                 if (attempt === MAX_REQUEST_RETRIES) throw error;
                 const delay = Math.min(8000, 500 * (2 ** attempt));
                 log(`${label}: falha de rede; nova tentativa em ${Math.ceil(delay / 1000)}s.`);
@@ -780,6 +821,7 @@
 
         running = true;
         cancelRequested = false;
+        activeAbortController = new AbortController();
         activeToken = token;
         setRunningUi(true);
         document.getElementById('attus-ytmd-status').textContent = '';
@@ -943,9 +985,42 @@
             }
         } finally {
             activeToken = '';
+            activeAbortController = null;
             document.getElementById('attus-ytmd-token').value = '';
             running = false;
             setRunningUi(false);
+        }
+    }
+
+    function stopProcessing(button = null) {
+        if (!running || cancelRequested) return false;
+        cancelRequested = true;
+        if (button) {
+            button.disabled = true;
+            button.textContent = 'Parando...';
+        }
+        activeAbortController?.abort();
+        log('Parada solicitada; cancelando requisicoes e finalizando gravacoes em andamento...');
+        return true;
+    }
+
+    function clearLog() {
+        const status = document.getElementById('attus-ytmd-status');
+        if (!status) return;
+        status.textContent = running ? '' : 'Pronto para iniciar.\n';
+        status.scrollTop = 0;
+    }
+
+    async function copyLog(button) {
+        const text = document.getElementById('attus-ytmd-status')?.textContent || '';
+        if (!text.trim()) return;
+        try {
+            await navigator.clipboard.writeText(text);
+            const original = button.textContent;
+            button.textContent = 'Log copiado';
+            setTimeout(() => { button.textContent = original; }, 1500);
+        } catch (error) {
+            alert(`Nao foi possivel copiar o log: ${error.message}`);
         }
     }
 
@@ -957,6 +1032,9 @@
         document.getElementById('attus-ytmd-workers').disabled = isRunning;
         document.getElementById('attus-ytmd-attachments').disabled = isRunning;
         document.getElementById('attus-ytmd-cancel').disabled = !isRunning;
+        document.getElementById('attus-ytmd-cancel').textContent = 'Parar processamento';
+        document.querySelectorAll('.attus-ytmd-project-chip input, .attus-ytmd-project-commands button')
+            .forEach((element) => { element.disabled = isRunning; });
     }
 
     function createUi() {
@@ -978,7 +1056,19 @@
                 Siglas dos projetos
                 <textarea id="attus-ytmd-project" maxlength="1000" autocomplete="off" spellcheck="false" placeholder="ATT, PRD, INFRA">${DEFAULT_PROJECT}</textarea>
             </label>
-            <p class="attus-ytmd-note">Separe as siglas por virgula, espaco, ponto e virgula ou quebra de linha.</p>
+            <div class="attus-ytmd-project-tools" aria-label="Projetos sugeridos">
+                ${SUGGESTED_PROJECTS.map((project) => `
+                    <label class="attus-ytmd-project-chip">
+                        <input type="checkbox" value="${project}" ${project === DEFAULT_PROJECT ? 'checked' : ''}>
+                        ${project}
+                    </label>
+                `).join('')}
+            </div>
+            <div class="attus-ytmd-project-commands">
+                <button id="attus-ytmd-project-all" type="button">Selecionar todos</button>
+                <button id="attus-ytmd-project-clear" type="button">Limpar siglas</button>
+            </div>
+            <p class="attus-ytmd-note">Marque um, alguns ou todos. Outras siglas podem ser digitadas e separadas por virgula, espaco, ponto e virgula ou quebra de linha.</p>
             <label class="field">
                 Formato dos artigos
                 <select id="attus-ytmd-format">
@@ -1001,19 +1091,57 @@
             <p class="attus-ytmd-note">Todos os artigos, anexos, indices e manifestos ficam na mesma pasta. Os nomes usam IDs estaveis, portanto novas execucoes sobrescrevem os mesmos arquivos. Os trabalhadores processam todos os projetos em paralelo. O token nao e salvo.</p>
             <div class="attus-ytmd-actions">
                 <button id="attus-ytmd-start" class="primary" type="button">Escolher pasta e exportar</button>
-                <button id="attus-ytmd-cancel" class="danger" type="button" disabled>Cancelar</button>
+                <button id="attus-ytmd-cancel" class="danger" type="button" disabled>Parar processamento</button>
+                <button id="attus-ytmd-clear-log" type="button">Limpar log</button>
+                <button id="attus-ytmd-copy-log" type="button">Copiar log</button>
             </div>
             <pre id="attus-ytmd-status">Pronto para iniciar.</pre>
         `;
 
         document.body.append(openButton, panel);
+        const projectInput = panel.querySelector('#attus-ytmd-project');
+        const projectSuggestionInputs = [...panel.querySelectorAll('.attus-ytmd-project-chip input')];
+        const suggestedProjectSet = new Set(SUGGESTED_PROJECTS);
+        const syncSuggestionsFromInput = () => {
+            let selected;
+            try {
+                selected = new Set(parseProjectList(projectInput.value));
+            } catch (_error) {
+                return;
+            }
+            for (const input of projectSuggestionInputs) input.checked = selected.has(input.value);
+        };
+        const syncInputFromSuggestions = () => {
+            let current;
+            try {
+                current = parseProjectList(projectInput.value);
+            } catch (_error) {
+                current = [];
+            }
+            const custom = current.filter((project) => !suggestedProjectSet.has(project));
+            const suggested = projectSuggestionInputs.filter((input) => input.checked).map((input) => input.value);
+            projectInput.value = [...suggested, ...custom].join(', ');
+        };
+
         openButton.addEventListener('click', () => { panel.hidden = !panel.hidden; });
         panel.querySelector('#attus-ytmd-close').addEventListener('click', () => { panel.hidden = true; });
-        panel.querySelector('#attus-ytmd-start').addEventListener('click', runExport);
-        panel.querySelector('#attus-ytmd-cancel').addEventListener('click', () => {
-            cancelRequested = true;
-            log('Cancelamento solicitado; finalizando a operacao atual...');
+        projectInput.addEventListener('input', syncSuggestionsFromInput);
+        for (const input of projectSuggestionInputs) input.addEventListener('change', syncInputFromSuggestions);
+        panel.querySelector('#attus-ytmd-project-all').addEventListener('click', () => {
+            for (const input of projectSuggestionInputs) input.checked = true;
+            syncInputFromSuggestions();
         });
+        panel.querySelector('#attus-ytmd-project-clear').addEventListener('click', () => {
+            for (const input of projectSuggestionInputs) input.checked = false;
+            projectInput.value = '';
+            projectInput.focus();
+        });
+        panel.querySelector('#attus-ytmd-start').addEventListener('click', runExport);
+        panel.querySelector('#attus-ytmd-cancel').addEventListener('click', (event) => {
+            stopProcessing(event.currentTarget);
+        });
+        panel.querySelector('#attus-ytmd-clear-log').addEventListener('click', clearLog);
+        panel.querySelector('#attus-ytmd-copy-log').addEventListener('click', (event) => copyLog(event.currentTarget));
     }
 
     createUi();
