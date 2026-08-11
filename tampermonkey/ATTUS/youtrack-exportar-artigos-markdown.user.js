@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         YouTrack ATT - Exportar Artigos
 // @namespace    https://youtrack.attus.ai/
-// @version      2026.08.11.02
+// @version      2026.08.11.03
 // @description  Exporta artigos de um ou varios projetos diretamente para a pasta escolhida, sem criar subpastas.
 // @author       ATTUS
 // @match        https://youtrack.attus.ai/articles/*
@@ -364,6 +364,56 @@
         } finally {
             await writable.close();
         }
+    }
+
+    async function scanExistingOutputs(directoryHandle, exportFormat) {
+        const filesByDocumentId = new Map();
+        const generatedMarkdownIndexes = new Set();
+        let examined = 0;
+
+        for await (const [name, handle] of directoryHandle.entries()) {
+            checkCancelled();
+            if (handle.kind !== 'file') continue;
+            const lowerName = name.toLowerCase();
+            if (exportFormat === 'pdf') {
+                const legacyPdf = name.match(/^([A-Z0-9_-]+-A-\d+)\s+-\s+.+\.pdf$/i);
+                if (legacyPdf) {
+                    const documentId = legacyPdf[1].toUpperCase();
+                    if (!filesByDocumentId.has(documentId)) filesByDocumentId.set(documentId, []);
+                    filesByDocumentId.get(documentId).push(name);
+                }
+                continue;
+            }
+            if (!lowerName.endsWith('.md')) continue;
+
+            examined += 1;
+            const file = await handle.getFile();
+            const header = await file.slice(0, 65536).text();
+            const documentMatch = header.match(/^document_id:\s*["']?([^"'\r\n]+)["']?\s*$/im);
+            if (documentMatch) {
+                const documentId = documentMatch[1].trim().toUpperCase();
+                if (!filesByDocumentId.has(documentId)) filesByDocumentId.set(documentId, []);
+                filesByDocumentId.get(documentId).push(name);
+            } else if (/^#\s+(?:Artigos do YouTrack(?:\s+-\s+.+)?|Exportacao de artigos do YouTrack)\s*$/im.test(header)) {
+                generatedMarkdownIndexes.add(name);
+            }
+            if (examined % 500 === 0) log(`${examined} arquivos Markdown existentes verificados para deduplicacao...`);
+        }
+        return { filesByDocumentId, generatedMarkdownIndexes };
+    }
+
+    async function removeLegacyArticleCopies(directoryHandle, existingOutputs, article, canonicalFileName) {
+        const documentId = String(article.idReadable || '').toUpperCase();
+        const candidates = existingOutputs.filesByDocumentId.get(documentId) || [];
+        let removed = 0;
+        for (const name of candidates) {
+            checkCancelled();
+            if (name.toLocaleLowerCase() === canonicalFileName.toLocaleLowerCase()) continue;
+            await directoryHandle.removeEntry(name);
+            removed += 1;
+        }
+        existingOutputs.filesByDocumentId.set(documentId, [canonicalFileName]);
+        return removed;
     }
 
     function replaceAttachmentUrls(content, attachments, article, articleAssetPath) {
@@ -798,6 +848,7 @@
         const workerCount = normalizeWorkerCount(document.getElementById('attus-ytmd-workers').value);
         document.getElementById('attus-ytmd-workers').value = String(workerCount);
         const includeAttachments = document.getElementById('attus-ytmd-attachments').checked;
+        const removeDuplicates = document.getElementById('attus-ytmd-deduplicate').checked;
         if (!projects.length) {
             alert('Informe uma ou mais siglas de projeto, por exemplo ATT, PRD, INFRA.');
             return;
@@ -836,6 +887,15 @@
             }
             if (missingProjects.length) log(`Aviso: nenhum artigo acessivel em ${missingProjects.join(', ')}.`);
 
+            const existingOutputs = removeDuplicates
+                ? await scanExistingOutputs(selectedDirectory, exportFormat)
+                : { filesByDocumentId: new Map(), generatedMarkdownIndexes: new Set() };
+            if (removeDuplicates) {
+                const duplicateCandidates = [...existingOutputs.filesByDocumentId.values()]
+                    .reduce((total, names) => total + Math.max(0, names.length - 1), 0);
+                log(`${duplicateCandidates} copia(s) antiga(s) candidata(s) a remocao apos a gravacao segura.`);
+            }
+
             const multipleProjects = projects.length > 1;
             const outputRoot = selectedDirectory;
             const projectContexts = new Map();
@@ -856,7 +916,7 @@
                     exportRoot: outputRoot,
                     articlesDirectory: outputRoot,
                     assetsDirectory: outputRoot,
-                    indexFileName: `YouTrack-${project}-README.md`,
+                    indexFileName: `YouTrack-${project}-INDICE.txt`,
                     manifestFileName: `YouTrack-${project}-manifest.json`,
                     articles,
                     articleById: new Map(articles.map((article) => [article.id, article])),
@@ -872,6 +932,7 @@
             const totalArticles = jobs.length;
             let completed = 0;
             let failedAttachments = 0;
+            let removedDuplicates = 0;
 
             await runWorkerPool(jobs, workerCount, async ({ project, article, articleIndex }) => {
                 checkCancelled();
@@ -888,6 +949,20 @@
                         includeAttachments,
                     );
                 await writeFile(context.articlesDirectory, fileName, articleFile);
+
+                if (removeDuplicates) {
+                    const removed = await removeLegacyArticleCopies(
+                        selectedDirectory,
+                        existingOutputs,
+                        article,
+                        fileName,
+                    );
+                    removedDuplicates += removed;
+                    context.removedDuplicates = (context.removedDuplicates || 0) + removed;
+                    if (removedDuplicates <= 10 || removedDuplicates % 100 === 0) {
+                        log(`${removedDuplicates} copia(s) antiga(s) removida(s) com seguranca.`);
+                    }
+                }
 
                 if (includeAttachments && attachments.length) {
                     for (const attachment of attachments) {
@@ -936,6 +1011,7 @@
                     workers: workerCount,
                     markdownSchemaVersion: exportFormat === 'md' ? 1 : null,
                     vectorReady: exportFormat === 'md',
+                    duplicatesRemoved: context.removedDuplicates || 0,
                     articles: context.manifest.filter(Boolean),
                 }, null, 2));
             }
@@ -943,7 +1019,7 @@
             if (multipleProjects) {
                 await writeFile(
                     outputRoot,
-                    'YouTrack-README.md',
+                    'YouTrack-INDICE.txt',
                     buildMultiProjectIndex(projects, projectContexts, missingProjects, formatLabel),
                 );
                 await writeFile(outputRoot, 'YouTrack-manifest.json', JSON.stringify({
@@ -955,6 +1031,7 @@
                     articleCount: totalArticles,
                     workers: workerCount,
                     simultaneousProjects: true,
+                    duplicatesRemoved: removedDuplicates,
                     markdownSchemaVersion: exportFormat === 'md' ? 1 : null,
                     vectorReady: exportFormat === 'md',
                     projects: foundProjects.map((project) => {
@@ -969,12 +1046,26 @@
                 }, null, 2));
             }
 
+            let removedIndexes = 0;
+            if (removeDuplicates && exportFormat === 'md') {
+                for (const name of existingOutputs.generatedMarkdownIndexes) {
+                    checkCancelled();
+                    await selectedDirectory.removeEntry(name);
+                    removedIndexes += 1;
+                }
+            }
+
             log(`Concluido: ${completed} artigos de ${foundProjects.length} projeto(s) em ${formatLabel} salvos.`);
+            if (removedDuplicates) log(`${removedDuplicates} copia(s) legada(s) de artigos removida(s).`);
+            if (removedIndexes) log(`${removedIndexes} indice(s) Markdown antigo(s) removido(s) do corpus vetorial.`);
             if (failedAttachments) log(`${failedAttachments} anexos falharam; os avisos acima indicam quais.`);
             const missingNotice = missingProjects.length
                 ? `\nSem artigos acessiveis: ${missingProjects.join(', ')}.`
                 : '';
-            alert(`Exportacao concluida.\n\n${completed} artigos de ${foundProjects.length} projeto(s) em ${formatLabel} salvos diretamente em ${selectedDirectory.name}.${missingNotice}`);
+            const cleanupNotice = removeDuplicates
+                ? `\nCopias antigas removidas: ${removedDuplicates}.\nIndices Markdown antigos removidos: ${removedIndexes}.`
+                : '';
+            alert(`Exportacao concluida.\n\n${completed} artigos de ${foundProjects.length} projeto(s) em ${formatLabel} salvos diretamente em ${selectedDirectory.name}.${cleanupNotice}${missingNotice}`);
         } catch (error) {
             if (error?.message === 'EXPORT_CANCELLED') {
                 log('Exportacao cancelada pelo usuario. Os arquivos ja gravados foram mantidos.');
@@ -1004,6 +1095,86 @@
         return true;
     }
 
+    async function runDuplicateCleanup() {
+        if (running) return;
+        if (typeof window.showDirectoryPicker !== 'function') {
+            alert('Este navegador nao oferece a selecao segura de pastas. Abra o YouTrack no Chrome ou Edge atualizado.');
+            return;
+        }
+
+        let selectedDirectory;
+        try {
+            selectedDirectory = await window.showDirectoryPicker({ mode: 'readwrite' });
+        } catch (error) {
+            if (error?.name !== 'AbortError') alert(`Nao foi possivel selecionar a pasta: ${error.message}`);
+            return;
+        }
+
+        running = true;
+        cancelRequested = false;
+        activeAbortController = new AbortController();
+        setRunningUi(true);
+        document.getElementById('attus-ytmd-status').textContent = '';
+
+        try {
+            log(`Analisando duplicados em ${selectedDirectory.name}...`);
+            const existingOutputs = await scanExistingOutputs(selectedDirectory, 'md');
+            const removalPlan = [];
+            for (const [documentId, names] of existingOutputs.filesByDocumentId) {
+                const canonicalName = `${sanitizeName(documentId, 120)}.md`;
+                const hasCanonical = names.some(
+                    (name) => name.toLocaleLowerCase() === canonicalName.toLocaleLowerCase(),
+                );
+                if (!hasCanonical) continue;
+                for (const name of names) {
+                    if (name.toLocaleLowerCase() !== canonicalName.toLocaleLowerCase()) {
+                        removalPlan.push({ documentId, name });
+                    }
+                }
+            }
+
+            if (!removalPlan.length) {
+                log('Nenhuma copia duplicada de artigo foi encontrada.');
+                alert('Nenhum artigo duplicado foi encontrado na pasta selecionada.');
+                return;
+            }
+
+            const approved = confirm(
+                `Foram encontradas ${removalPlan.length} copias antigas de artigos.\n\n`
+                + 'Cada uma possui uma versao canonica ID.md com o mesmo document_id.\n\n'
+                + 'Deseja remover as copias antigas agora?',
+            );
+            if (!approved) {
+                log('Limpeza cancelada antes de qualquer exclusao.');
+                return;
+            }
+
+            let removed = 0;
+            for (const item of removalPlan) {
+                checkCancelled();
+                await selectedDirectory.removeEntry(item.name);
+                removed += 1;
+                if (removed <= 10 || removed % 100 === 0 || removed === removalPlan.length) {
+                    log(`${removed}/${removalPlan.length} copias antigas removidas...`);
+                }
+            }
+            log(`Limpeza concluida: ${removed} copias antigas removidas; arquivos ID.md preservados.`);
+            alert(`Limpeza concluida.\n\n${removed} copias antigas removidas.\nOs arquivos canonicos ID.md foram preservados.`);
+        } catch (error) {
+            if (error?.message === 'EXPORT_CANCELLED') {
+                log('Limpeza interrompida. As exclusoes ja concluidas foram mantidas.');
+            } else {
+                console.error('[YouTrack Markdown Deduplicate]', error);
+                log(`ERRO: ${error?.message || error}`);
+                alert(`A limpeza falhou:\n\n${error?.message || error}`);
+            }
+        } finally {
+            activeAbortController = null;
+            running = false;
+            setRunningUi(false);
+        }
+    }
+
     function clearLog() {
         const status = document.getElementById('attus-ytmd-status');
         if (!status) return;
@@ -1031,6 +1202,8 @@
         document.getElementById('attus-ytmd-format').disabled = isRunning;
         document.getElementById('attus-ytmd-workers').disabled = isRunning;
         document.getElementById('attus-ytmd-attachments').disabled = isRunning;
+        document.getElementById('attus-ytmd-deduplicate').disabled = isRunning;
+        document.getElementById('attus-ytmd-clean-duplicates').disabled = isRunning;
         document.getElementById('attus-ytmd-cancel').disabled = !isRunning;
         document.getElementById('attus-ytmd-cancel').textContent = 'Parar processamento';
         document.querySelectorAll('.attus-ytmd-project-chip input, .attus-ytmd-project-commands button')
@@ -1088,12 +1261,17 @@
                 <input id="attus-ytmd-attachments" type="checkbox" checked>
                 Baixar anexos e ajustar as referencias
             </label>
-            <p class="attus-ytmd-note">Todos os artigos, anexos, indices e manifestos ficam na mesma pasta. Os nomes usam IDs estaveis, portanto novas execucoes sobrescrevem os mesmos arquivos. Os trabalhadores processam todos os projetos em paralelo. O token nao e salvo.</p>
+            <label class="attus-ytmd-check">
+                <input id="attus-ytmd-deduplicate" type="checkbox" checked>
+                Remover copias antigas do mesmo artigo apos salvar a versao atual
+            </label>
+            <p class="attus-ytmd-note">A deduplicacao compara o document_id e so remove a copia antiga depois que o arquivo ID.md foi salvo com sucesso. Indices sao gerados como .txt para nao entrarem no banco vetorial. Todos os arquivos permanecem na pasta selecionada. O token nao e salvo.</p>
             <div class="attus-ytmd-actions">
                 <button id="attus-ytmd-start" class="primary" type="button">Escolher pasta e exportar</button>
                 <button id="attus-ytmd-cancel" class="danger" type="button" disabled>Parar processamento</button>
                 <button id="attus-ytmd-clear-log" type="button">Limpar log</button>
                 <button id="attus-ytmd-copy-log" type="button">Copiar log</button>
+                <button id="attus-ytmd-clean-duplicates" type="button">Limpar artigos duplicados</button>
             </div>
             <pre id="attus-ytmd-status">Pronto para iniciar.</pre>
         `;
@@ -1142,6 +1320,7 @@
         });
         panel.querySelector('#attus-ytmd-clear-log').addEventListener('click', clearLog);
         panel.querySelector('#attus-ytmd-copy-log').addEventListener('click', (event) => copyLog(event.currentTarget));
+        panel.querySelector('#attus-ytmd-clean-duplicates').addEventListener('click', runDuplicateCleanup);
     }
 
     createUi();
