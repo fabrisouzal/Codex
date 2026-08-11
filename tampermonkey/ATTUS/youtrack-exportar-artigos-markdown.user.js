@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         YouTrack ATT - Exportar Artigos
 // @namespace    https://youtrack.attus.ai/
-// @version      2026.08.11.04
-// @description  Exporta artigos de um ou varios projetos diretamente para a pasta escolhida, sem criar subpastas.
+// @version      2026.08.11.05
+// @description  Exporta somente artigos inexistentes para a pasta escolhida, com nomes completos e sem criar subpastas.
 // @author       ATTUS
 // @match        https://youtrack.attus.ai/articles/*
 // @updateURL    https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/youtrack-exportar-artigos-markdown.user.js
@@ -395,8 +395,9 @@
             const file = await handle.getFile();
             const header = await file.slice(0, 65536).text();
             const documentMatch = header.match(/^document_id:\s*["']?([^"'\r\n]+)["']?\s*$/im);
-            if (documentMatch) {
-                const documentId = documentMatch[1].trim().toUpperCase();
+            const articleNameMatch = name.match(/^([A-Z0-9_-]+-A-\d+)(?:\s+-\s+.+)?\.md$/i);
+            if (documentMatch || articleNameMatch) {
+                const documentId = (documentMatch?.[1] || articleNameMatch[1]).trim().toUpperCase();
                 if (!filesByDocumentId.has(documentId)) filesByDocumentId.set(documentId, []);
                 filesByDocumentId.get(documentId).push(name);
             } else if (/^#\s+(?:Artigos do YouTrack(?:\s+-\s+.+)?|Exportacao de artigos do YouTrack)\s*$/im.test(header)) {
@@ -405,20 +406,6 @@
             if (examined % 500 === 0) log(`${examined} arquivos Markdown existentes verificados para deduplicacao...`);
         }
         return { filesByDocumentId, generatedMarkdownIndexes };
-    }
-
-    async function removeOtherArticleCopies(directoryHandle, existingOutputs, article, canonicalFileName) {
-        const documentId = String(article.idReadable || '').toUpperCase();
-        const candidates = existingOutputs.filesByDocumentId.get(documentId) || [];
-        let removed = 0;
-        for (const name of candidates) {
-            checkCancelled();
-            if (name.toLocaleLowerCase() === canonicalFileName.toLocaleLowerCase()) continue;
-            await directoryHandle.removeEntry(name);
-            removed += 1;
-        }
-        existingOutputs.filesByDocumentId.set(documentId, [canonicalFileName]);
-        return removed;
     }
 
     function replaceAttachmentUrls(content, attachments, article, articleAssetPath) {
@@ -928,12 +915,45 @@
 
             const totalArticles = jobs.length;
             let completed = 0;
+            let savedArticles = 0;
+            let skippedExisting = 0;
             let failedAttachments = 0;
-            let removedDuplicates = 0;
 
             await runWorkerPool(jobs, workerCount, async ({ project, article, articleIndex }) => {
                 checkCancelled();
                 const context = projectContexts.get(project);
+                const documentId = String(article.idReadable || '').toUpperCase();
+                const existingNames = existingOutputs.filesByDocumentId.get(documentId) || [];
+                if (existingNames.length) {
+                    const completePrefix = `${documentId.toLocaleLowerCase()} - `;
+                    const expectedExtension = `.${exportFormat}`;
+                    const existingFileName = [...existingNames]
+                        .sort((a, b) => a.localeCompare(b, 'pt-BR'))
+                        .find((name) => {
+                            const lowerName = name.toLocaleLowerCase();
+                            return lowerName.startsWith(completePrefix) && lowerName.endsWith(expectedExtension);
+                        }) || existingNames[0];
+                    context.fileNameById.set(article.id, existingFileName);
+                    context.manifest[articleIndex] = {
+                        id: article.idReadable,
+                        title: article.summary || '',
+                        source: articleUrl(article),
+                        parent: article.parentArticle?.idReadable || null,
+                        file: existingFileName,
+                        format: exportFormat,
+                        status: 'existing_skipped',
+                        attachments: null,
+                        updated: isoDate(article.updated),
+                        tags: (article.tags || []).map((tag) => tag?.name).filter(Boolean),
+                        breadcrumb: buildArticleBreadcrumb(article, context.articleById),
+                    };
+                    skippedExisting += 1;
+                    context.skippedExisting = (context.skippedExisting || 0) + 1;
+                    completed += 1;
+                    log(`${completed}/${totalArticles} - ${project} / ${article.idReadable} ja existe; ignorado sem alteracoes.`);
+                    return;
+                }
+
                 const attachments = await fetchAttachments(article);
                 const fileName = context.fileNameById.get(article.id);
                 const articleFile = exportFormat === 'pdf'
@@ -944,20 +964,9 @@
                         context.fileNameById,
                         context.articleById,
                         includeAttachments,
-                    );
-                await writeFile(context.articlesDirectory, fileName, articleFile);
-
-                const removed = await removeOtherArticleCopies(
-                    selectedDirectory,
-                    existingOutputs,
-                    article,
-                    fileName,
                 );
-                removedDuplicates += removed;
-                context.removedDuplicates = (context.removedDuplicates || 0) + removed;
-                if (removed > 0 && (removedDuplicates <= 10 || removedDuplicates % 100 === 0)) {
-                    log(`${removedDuplicates} nome(s) antigo(s) removido(s) com seguranca.`);
-                }
+                await writeFile(context.articlesDirectory, fileName, articleFile);
+                existingOutputs.filesByDocumentId.set(documentId, [fileName]);
 
                 if (includeAttachments && attachments.length) {
                     for (const attachment of attachments) {
@@ -979,11 +988,14 @@
                     parent: article.parentArticle?.idReadable || null,
                     file: fileName,
                     format: exportFormat,
+                    status: 'created',
                     attachments: attachments.length,
                     updated: isoDate(article.updated),
                     tags: (article.tags || []).map((tag) => tag?.name).filter(Boolean),
                     breadcrumb: buildArticleBreadcrumb(article, context.articleById),
                 };
+                savedArticles += 1;
+                context.savedArticles = (context.savedArticles || 0) + 1;
                 completed += 1;
                 log(`${completed}/${totalArticles} - ${project} / ${article.idReadable} salvo.`);
                 await sleep(REQUEST_DELAY_MS);
@@ -1006,7 +1018,8 @@
                     workers: workerCount,
                     markdownSchemaVersion: exportFormat === 'md' ? 1 : null,
                     vectorReady: exportFormat === 'md',
-                    duplicatesRemoved: context.removedDuplicates || 0,
+                    createdCount: context.savedArticles || 0,
+                    skippedExistingCount: context.skippedExisting || 0,
                     articles: context.manifest.filter(Boolean),
                 }, null, 2));
             }
@@ -1026,7 +1039,8 @@
                     articleCount: totalArticles,
                     workers: workerCount,
                     simultaneousProjects: true,
-                    duplicatesRemoved: removedDuplicates,
+                    createdCount: savedArticles,
+                    skippedExistingCount: skippedExisting,
                     markdownSchemaVersion: exportFormat === 'md' ? 1 : null,
                     vectorReady: exportFormat === 'md',
                     projects: foundProjects.map((project) => {
@@ -1050,15 +1064,14 @@
                 }
             }
 
-            log(`Concluido: ${completed} artigos de ${foundProjects.length} projeto(s) em ${formatLabel} salvos.`);
-            if (removedDuplicates) log(`${removedDuplicates} copia(s) legada(s) de artigos removida(s).`);
+            log(`Concluido: ${savedArticles} novo(s) artigo(s) salvo(s); ${skippedExisting} existente(s) ignorado(s).`);
             if (removedIndexes) log(`${removedIndexes} indice(s) Markdown antigo(s) removido(s) do corpus vetorial.`);
             if (failedAttachments) log(`${failedAttachments} anexos falharam; os avisos acima indicam quais.`);
             const missingNotice = missingProjects.length
                 ? `\nSem artigos acessiveis: ${missingProjects.join(', ')}.`
                 : '';
-            const cleanupNotice = `\nNomes antigos removidos: ${removedDuplicates}.\nIndices Markdown antigos removidos: ${removedIndexes}.`;
-            alert(`Exportacao concluida.\n\n${completed} artigos de ${foundProjects.length} projeto(s) em ${formatLabel} salvos diretamente em ${selectedDirectory.name}.${cleanupNotice}${missingNotice}`);
+            const cleanupNotice = `\nNovos artigos salvos: ${savedArticles}.\nArtigos existentes ignorados: ${skippedExisting}.\nIndices Markdown antigos removidos: ${removedIndexes}.`;
+            alert(`Exportacao concluida.\n\n${completed} artigos de ${foundProjects.length} projeto(s) examinados em ${selectedDirectory.name}.${cleanupNotice}${missingNotice}`);
         } catch (error) {
             if (error?.message === 'EXPORT_CANCELLED') {
                 log('Exportacao cancelada pelo usuario. Os arquivos ja gravados foram mantidos.');
@@ -1258,7 +1271,7 @@
                 <input id="attus-ytmd-attachments" type="checkbox" checked>
                 Baixar anexos e ajustar as referencias
             </label>
-            <p class="attus-ytmd-note">Cada artigo usa obrigatoriamente o nome completo ID - titulo. Antes de criar, o script procura o mesmo document_id na pasta; nomes simples ou antigos so sao removidos depois que a versao atual foi salva. Indices sao gerados como .txt para nao entrarem no banco vetorial. O token nao e salvo.</p>
+            <p class="attus-ytmd-note">Antes de baixar, o script procura o document_id na pasta. Se o artigo ja existir, ele e ignorado sem sobrescrever, renomear, excluir ou baixar seus anexos. Somente artigos novos sao criados, sempre como ID - titulo. Indices sao gerados como .txt. O token nao e salvo.</p>
             <div class="attus-ytmd-actions">
                 <button id="attus-ytmd-start" class="primary" type="button">Escolher pasta e exportar</button>
                 <button id="attus-ytmd-cancel" class="danger" type="button" disabled>Parar processamento</button>
