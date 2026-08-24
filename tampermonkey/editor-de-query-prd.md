@@ -8,9 +8,9 @@ Arquivo Tampermonkey: `Editor de Query.user.js`
 
 Arquivo publicado: `tampermonkey/editor-de-query.user.js`
 
-Versao do script: `2026-07-15.02`
+Versao do script: `2026-08-24.01`
 
-Versao do documento: `2026-07-15.02`
+Versao do documento: `2026-08-24.01`
 
 URL de instalacao e atualizacao:
 `https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/editor-de-query.user.js`
@@ -112,7 +112,8 @@ Comportamentos existentes:
 - Executar selecao.
 - Selecionar bloco SQL automaticamente por linhas vazias.
 - Atalho `Ctrl+Enter` para executar.
-- Remocao de ponto e virgula antes da execucao.
+- Remocao de ponto e virgula antes da execucao somente quando o caractere estiver fora de strings SQL e comentarios.
+- Preservacao de ponto e virgula dentro de aspas simples, aspas duplas, comentarios e literais Oracle `q'[...]'` (novo).
 - Uso de texto temporario para executar selecao sem substituir permanentemente a query inteira.
 - Restauracao do conteudo apos execucao parcial quando aplicavel.
 - Execucao de selecao isolada do conteudo completo do editor, evitando que linhas fora da selecao sejam enviadas ao servidor (novo).

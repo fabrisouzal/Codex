@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Editor de Query
 // @namespace    http://tampermonkey.net/
-// @version      2026-07-15.02
+// @version      2026-08-24.01
 // @description  Editor SQL Pro com CodeMirror, ribbon, snippets, configuracoes, import/export SQL e execucao parcial.
 // @compatible   edge
 // @match        http://10.200.35.7/portal/Simples/ExecucaoDireta.aspx
@@ -3144,7 +3144,104 @@
   }
 
   function removeSemicolonsFromSql(text) {
-    return String(text || "").replace(/;/g, "");
+    var source = String(text || "");
+    var out = [];
+    var stateName = "normal";
+    var qEnd = "";
+
+    function qQuoteEndChar(open) {
+      if (open === "[") return "]";
+      if (open === "(") return ")";
+      if (open === "{") return "}";
+      if (open === "<") return ">";
+      return open;
+    }
+
+    for (var i = 0; i < source.length; i++) {
+      var ch = source.charAt(i);
+      var next = source.charAt(i + 1);
+
+      if (stateName === "normal") {
+        if (ch === "-" && next === "-") {
+          out.push(ch, next);
+          i++;
+          stateName = "lineComment";
+          continue;
+        }
+        if (ch === "/" && next === "*") {
+          out.push(ch, next);
+          i++;
+          stateName = "blockComment";
+          continue;
+        }
+        if ((ch === "q" || ch === "Q") && next === "'" && i + 2 < source.length) {
+          out.push(ch, next, source.charAt(i + 2));
+          qEnd = qQuoteEndChar(source.charAt(i + 2));
+          i += 2;
+          stateName = "qQuote";
+          continue;
+        }
+        if (ch === "'") {
+          out.push(ch);
+          stateName = "single";
+          continue;
+        }
+        if (ch === '"') {
+          out.push(ch);
+          stateName = "double";
+          continue;
+        }
+        if (ch === ";") {
+          continue;
+        }
+        out.push(ch);
+        continue;
+      }
+
+      out.push(ch);
+
+      if (stateName === "single") {
+        if (ch === "'" && next === "'") {
+          out.push(next);
+          i++;
+        } else if (ch === "'") {
+          stateName = "normal";
+        }
+        continue;
+      }
+
+      if (stateName === "double") {
+        if (ch === '"' && next === '"') {
+          out.push(next);
+          i++;
+        } else if (ch === '"') {
+          stateName = "normal";
+        }
+        continue;
+      }
+
+      if (stateName === "lineComment") {
+        if (ch === "\n" || ch === "\r") stateName = "normal";
+        continue;
+      }
+
+      if (stateName === "blockComment") {
+        if (ch === "*" && next === "/") {
+          out.push(next);
+          i++;
+          stateName = "normal";
+        }
+        continue;
+      }
+
+      if (stateName === "qQuote" && ch === qEnd && next === "'") {
+        out.push(next);
+        i++;
+        stateName = "normal";
+      }
+    }
+
+    return out.join("");
   }
 
   function captureEditorSnapshotForExecution() {
