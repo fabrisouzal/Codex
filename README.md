@@ -11,9 +11,11 @@ Instale cada script pelo link abaixo. Depois da primeira instalacao, o Tampermon
 | Editor de Query | 2026.06.25.04 | https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/editor-de-query.user.js |
 | Historico SQL | 2026-07-09.02 | https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/historico-sql.user.js |
 | Resultado Personalizado | 2026-06-25.01 | https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/resultado-personalizado.user.js |
+| Zendesk - Extrator de Tickets | 2026.09.04.01 | https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/zendesk-exportar-tickets-n2-resolvidos.user.js |
 
 ### Documentacao
 
 - [PRD - Editor de Query](tampermonkey/editor-de-query-prd.md)
 - [PRD - Historico SQL](tampermonkey/historico-sql.prd.md)
 - [PRD - Resultado Personalizado](tampermonkey/resultado-personalizado-prd.md)
+- [Zendesk - Eventos de auditoria](tampermonkey/ATTUS/zendesk-ticket-events.md)

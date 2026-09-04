@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Zendesk - Extrator de Tickets
 // @namespace    https://attus-ai.zendesk.com/
-// @version      2026.07.30.02
-// @description  Exporta tickets do Zendesk em PDF, Markdown ou ambos, com retomada e processamento paralelo controlado.
+// @version      2026.09.04.01
+// @description  Exporta tickets e eventos de auditoria do Zendesk em PDF, Markdown ou ambos, com retomada e workers controlados.
 // @author       ATTUS
 // @match        https://attus-ai.zendesk.com/agent/*
 // @updateURL    https://raw.githubusercontent.com/fabrisouzal/Codex/main/tampermonkey/ATTUS/zendesk-exportar-tickets-n2-resolvidos.user.js
@@ -24,7 +24,7 @@
     const HANDLE_STORE = 'handles';
     const HANDLE_KEY = 'output-directory';
     const PROGRESS_STORE = 'progress';
-    const EXPORT_PROFILE_VERSION = 5;
+    const EXPORT_PROFILE_VERSION = 6;
     const REQUEST_DELAY_MS = 120;
     const MAX_RETRIES = 5;
     const MIN_CONCURRENCY = 1;
@@ -37,6 +37,7 @@
     const groupCache = new Map();
     const groupPendingCache = new Map();
     const statusCache = new Map();
+    const fieldCache = new Map();
     let cancelRequested = false;
     let running = false;
     let directoryHandle = null;
@@ -398,6 +399,169 @@
         return comments;
     }
 
+    async function collectAudits(ticketId) {
+        let url = apiUrl(`/api/v2/tickets/${ticketId}/audits.json`, {
+            'page[size]': 100, sort_order: 'asc', include_boundary_indicators: true
+        });
+        const audits = new Map();
+        const seenPages = new Set();
+        while (url) {
+            if (cancelRequested) throw new Error('Exportação cancelada durante a coleta de eventos.');
+            url = validatedApiUrl(url);
+            if (seenPages.has(url)) throw new Error(`Paginação repetida nos eventos do ticket #${ticketId}.`);
+            seenPages.add(url);
+            const payload = await fetchJson(url);
+            if (!Array.isArray(payload.audits)) {
+                throw new Error(`Resposta inválida de auditoria do ticket #${ticketId}.`);
+            }
+            for (const audit of payload.audits) {
+                if (!audit || audit.id == null || !Array.isArray(audit.events)
+                    || (audit.ticket_id != null && String(audit.ticket_id) !== String(ticketId))) {
+                    throw new Error(`Registro de auditoria inválido do ticket #${ticketId}.`);
+                }
+                audits.set(String(audit.id), audit);
+            }
+            // Tickets arquivados podem retornar uma página única, sem metadados de cursor.
+            if (payload.meta?.has_more === false) {
+                url = null;
+            } else {
+                url = payload.links?.next || payload.next_page || null;
+                if (payload.meta?.has_more === true && !url) {
+                    throw new Error(`Paginação incompleta nos eventos do ticket #${ticketId}.`);
+                }
+            }
+            if (url) await sleep(REQUEST_DELAY_MS);
+        }
+        return [...audits.values()].sort((a, b) =>
+            String(a.created_at || '').localeCompare(String(b.created_at || ''))
+            || String(a.id).localeCompare(String(b.id), 'en', { numeric: true })
+        );
+    }
+
+    async function loadTicketFields() {
+        if (fieldCache.size) return;
+        try {
+            let url = apiUrl('/api/v2/ticket_fields.json', { 'page[size]': 100 });
+            const seenPages = new Set();
+            while (url) {
+                if (cancelRequested) throw new Error('Coleta de campos cancelada.');
+                url = validatedApiUrl(url);
+                if (seenPages.has(url)) throw new Error('Paginação repetida no catálogo de campos.');
+                seenPages.add(url);
+                const payload = await fetchJson(url);
+                for (const field of payload.ticket_fields || []) fieldCache.set(String(field.id), field);
+                url = payload.meta?.has_more === false ? null : payload.links?.next || payload.next_page || null;
+            }
+        } catch (error) {
+            // O catálogo é complementar: IDs originais continuam preservados nos eventos.
+            log(`Aviso: nomes dos campos indisponíveis; os IDs serão mantidos. ${error.message}`);
+        }
+    }
+
+    function prepareAudits(audits, comments, includePrivate) {
+        const currentComments = new Map(comments
+            .filter(comment => includePrivate || comment.public === true)
+            .map(comment => [String(comment.id), comment]));
+        let totalEvents = 0;
+        let omittedEvents = 0;
+        const safeFields = new Set([
+            'status', 'custom_status_id', 'priority', 'type', 'group_id', 'assignee_id',
+            'requester_id', 'submitter_id', 'organization_id', 'brand_id', 'ticket_form_id',
+            'problem_id', 'tags', 'due_at', 'is_public'
+        ]);
+        const result = audits.map(audit => {
+            const events = [];
+            const seen = new Set();
+            for (const event of audit.events) {
+                if (!event || typeof event.type !== 'string') throw new Error('Evento de auditoria inválido.');
+                const key = event.id == null ? null : String(event.id);
+                if (key !== null && seen.has(key)) continue;
+                if (key !== null) seen.add(key);
+                totalEvents += 1;
+                // Nunca reexportar corpos históricos: podem anteceder redações ou mudanças de privacidade.
+                if (['Comment', 'VoiceComment', 'FacebookComment'].includes(event.type)) {
+                    const comment = currentComments.get(String(event.comment_id ?? event.id));
+                    if (!comment) {
+                        omittedEvents += 1;
+                        continue;
+                    }
+                    events.push({
+                        id: event.id, type: event.type, comment_id: comment.id,
+                        public: comment.public === true,
+                        reference: 'Conteúdo atual disponível na seção Conversa; corpo histórico não reproduzido.'
+                    });
+                } else if (includePrivate) {
+                    events.push(event);
+                } else if (['Change', 'Create'].includes(event.type) && safeFields.has(event.field_name)) {
+                    events.push({
+                        id: event.id, type: event.type, field_name: event.field_name,
+                        previous_value: event.previous_value, value: event.value
+                    });
+                } else {
+                    // Notificações, campos livres e tipos futuros podem conter notas internas em campos arbitrários.
+                    events.push({ id: event.id, type: event.type,
+                        details_omitted: 'Detalhes omitidos porque a inclusão de notas internas está desativada.' });
+                }
+            }
+            return {
+                id: audit.id, created_at: audit.created_at, author_id: audit.author_id,
+                via: includePrivate ? audit.via : { channel: audit.via?.channel },
+                metadata: includePrivate ? audit.metadata : undefined,
+                events
+            };
+        });
+        return { audits: result, totalEvents, omittedEvents };
+    }
+
+    function auditValue(fieldName, value) {
+        if (value === undefined) return 'Não informado';
+        if (value === null || value === '') return '(vazio)';
+        if (['assignee_id', 'requester_id', 'submitter_id'].includes(fieldName)) {
+            return `${userLabel(value)} [ID ${value}]`;
+        }
+        if (fieldName === 'group_id') return `${groupCache.get(asNumber(value)) || 'Grupo'} [ID ${value}]`;
+        if (fieldName === 'custom_status_id') return `${statusCache.get(asNumber(value)) || 'Status'} [ID ${value}]`;
+        const field = fieldCache.get(String(fieldName));
+        const label = item => {
+            const option = field?.custom_field_options?.find(entry => String(entry.value) === String(item));
+            return option ? `${option.name} [${item}]` : String(item);
+        };
+        if (Array.isArray(value)) return value.map(label).join(', ') || '(vazio)';
+        if (typeof value === 'object') return JSON.stringify(value);
+        return label(value);
+    }
+
+    function auditEventSummary(event) {
+        if (event.details_omitted) return event.details_omitted;
+        if (event.reference) return `Comentário ${event.comment_id} (${event.public ? 'Público' : 'Nota interna'}). ${event.reference}`;
+        if (event.type === 'Change' || event.type === 'Create') {
+            const field = fieldCache.get(String(event.field_name));
+            const name = field?.title ? `${field.title} [${event.field_name}]` : event.field_name || 'Campo';
+            const current = auditValue(event.field_name, event.value);
+            return event.type === 'Create' ? `${name}: ${current}`
+                : `${name}: ${auditValue(event.field_name, event.previous_value)} → ${current}`;
+        }
+        if (event.type === 'CommentPrivacyChange') return `Privacidade do comentário ${event.comment_id}: ${event.public ? 'Público' : 'Nota interna'}`;
+        return event.macro_title || event.subject || event.message || event.type;
+    }
+
+    function auditEntries(documentData) {
+        return (documentData.audits || []).flatMap(audit => audit.events.map(event => ({
+            audit, event, summary: auditEventSummary(event),
+            details: JSON.stringify({
+                audit_id: audit.id, author_id: audit.author_id, created_at: audit.created_at,
+                audit_via: audit.via, audit_metadata: audit.metadata, event
+            }, null, 2)
+        })));
+    }
+
+    function fencedJson(text) {
+        // Conteúdo de terceiros não pode encerrar o bloco e criar headings/instruções no Markdown.
+        const runs = String(text).match(/`+/g) || [];
+        const fence = '`'.repeat(runs.reduce((length, run) => Math.max(length, run.length + 1), 3));
+        return `${fence}json\n${text}\n${fence}`;
+    }
+
     async function populateUsers(ids) {
         const requested = [...new Set(ids.map(asNumber).filter(Boolean))];
         const fresh = requested.filter(id => !userCache.has(id) && !userPendingCache.has(id));
@@ -520,17 +684,25 @@
         return { html: root.innerHTML, inlineImages };
     }
 
-    async function loadTicketDocument(searchTicket, includePrivate) {
+    async function loadTicketDocument(searchTicket, includePrivate, includeEvents = false) {
         const ticketId = Number(searchTicket.id);
-        const [ticket, comments] = await Promise.all([
+        const [ticket, comments, rawAudits] = await Promise.all([
             loadTicket(ticketId),
-            collectComments(ticketId, includePrivate)
+            collectComments(ticketId, includePrivate),
+            includeEvents ? collectAudits(ticketId) : Promise.resolve([])
         ]);
+        const auditData = prepareAudits(rawAudits, comments, includePrivate);
+        const events = auditData.audits.flatMap(audit => audit.events);
+        const changedUsers = events.filter(event =>
+            ['assignee_id', 'requester_id', 'submitter_id'].includes(event.field_name)
+        ).flatMap(event => [event.previous_value, event.value]);
         const usersPromise = populateUsers([
             ticket.requester_id,
             ticket.submitter_id,
             ticket.assignee_id,
-            ...comments.map(comment => comment.author_id)
+            ...comments.map(comment => comment.author_id),
+            ...auditData.audits.map(audit => audit.author_id),
+            ...changedUsers
         ]);
         const [group] = await Promise.all([
             groupName(ticket.group_id),
@@ -538,7 +710,10 @@
         ]);
         const statusId = asNumber(ticket.custom_status_id);
         const customStatus = statusCache.get(statusId) || (statusId ? `ID ${statusId}` : ticket.status || 'Não informado');
-        return { ticket, comments, group, customStatus };
+        const historicalGroups = new Set(events.filter(event => event.field_name === 'group_id')
+            .flatMap(event => [event.previous_value, event.value]).filter(Boolean));
+        for (const id of historicalGroups) await groupName(id);
+        return { ticket, comments, group, customStatus, includeEvents, includePrivate, ...auditData };
     }
 
     function toPdfText(value) {
@@ -747,6 +922,30 @@
             y += 5;
         });
 
+        if (documentData.includeEvents) {
+            const entries = auditEntries(documentData);
+            addPage();
+            writeWrapped(`Eventos de auditoria (${entries.length}) - Uso interno`, {
+                size: 14, style: 'bold', after: 4
+            });
+            writeWrapped(`${documentData.audits.length} auditoria(s); ${documentData.totalEvents} evento(s) recebido(s); `
+                + `${documentData.omittedEvents} referência(s) de comentário omitida(s) por privacidade/indisponibilidade.`, { size: 9 });
+            writeWrapped('Histórico administrativo: não é conteúdo público. Os corpos históricos dos comentários não são reproduzidos.', { size: 9 });
+            if (!documentData.includePrivate) {
+                writeWrapped('Notas internas desativadas: detalhes de notificações, campos livres e outros eventos foram omitidos.', { size: 9 });
+            }
+            if (!entries.length) writeWrapped('Nenhum evento incluído.', { style: 'italic' });
+            entries.forEach(({ audit, event, summary, details }, index) => {
+                ensureSpace(16);
+                writeWrapped(`#${index + 1} | ${event.type} | ID ${event.id ?? 'não informado'} | ${formatDate(audit.created_at)}`, {
+                    size: 10, style: 'bold', after: 1
+                });
+                writeWrapped(`Auditoria ${audit.id} | Autor: ${userLabel(audit.author_id)} | Canal: ${event.via?.channel || audit.via?.channel || 'Não informado'}`, { size: 9 });
+                writeWrapped(summary, { size: 10 });
+                writeWrapped(details, { size: 8, lineHeight: 3.5, after: 5 });
+            });
+        }
+
         const totalPages = doc.getNumberOfPages();
         for (let pageNumber = 1; pageNumber <= totalPages; pageNumber += 1) {
             doc.setPage(pageNumber);
@@ -809,7 +1008,7 @@
         const tags = Array.isArray(ticket.tags) ? ticket.tags : [];
         const lines = [
             '---',
-            'schema_version: 1',
+            'schema_version: 2',
             `document_id: ${yamlValue(`ZD-TICKET-${ticketId}`)}`,
             'source_type: "zendesk_ticket"',
             'idioma: "pt-BR"',
@@ -829,8 +1028,15 @@
             `prioridade: ${yamlValue(ticket.priority)}`,
             `tipo: ${yamlValue(ticket.type)}`,
             `inclui_notas_internas: ${Boolean(includePrivate)}`,
-            `access_scope: ${yamlValue(includePrivate ? 'internal' : 'public')}`,
+            `access_scope: ${yamlValue(includePrivate || documentData.includeEvents ? 'internal' : 'public')}`,
             `comentarios: ${comments.length}`,
+            `inclui_eventos: ${Boolean(documentData.includeEvents)}`,
+            `eventos_status: ${yamlValue(documentData.includeEvents ? 'complete' : 'not_requested')}`,
+            `auditorias: ${documentData.audits?.length || 0}`,
+            `eventos_recebidos: ${documentData.totalEvents || 0}`,
+            `eventos_exportados: ${(documentData.totalEvents || 0) - (documentData.omittedEvents || 0)}`,
+            `eventos_comentarios_omitidos: ${documentData.omittedEvents || 0}`,
+            `eventos_detalhes_restritos: ${Boolean(documentData.includeEvents && !includePrivate)}`,
             `tags: [${tags.map(yamlValue).join(', ')}]`,
             `fonte: ${yamlValue(ticketUrl)}`,
             `coleta: ${yamlValue(sourceLabel)}`,
@@ -900,6 +1106,30 @@
             }
         });
 
+        if (documentData.includeEvents) {
+            const entries = auditEntries(documentData);
+            lines.push('## Eventos de auditoria — Uso interno', '',
+                '- **Visibilidade:** internal',
+                `- **Auditorias:** ${documentData.audits.length}`,
+                `- **Eventos recebidos:** ${documentData.totalEvents}`,
+                `- **Eventos exportados:** ${entries.length}`,
+                `- **Referências de comentários omitidas:** ${documentData.omittedEvents}`, '',
+                'Histórico administrativo do ticket. Corpos históricos de comentários não são reproduzidos; consulte a versão atual na seção Conversa.', '');
+            if (!includePrivate) lines.push('Notas internas desativadas: detalhes de notificações, campos livres e outros eventos foram omitidos.', '');
+            if (!entries.length) lines.push('_Nenhum evento incluído._', '');
+            entries.forEach(({ audit, event, summary, details }, index) => {
+                lines.push(`### Evento ${String(index + 1).padStart(4, '0')} | ${markdownInline(event.type)} | ID ${markdownInline(event.id ?? 'não informado')} | Nota interna`, '',
+                    `- **Auditoria ID:** ${audit.id}`,
+                    `- **Data ISO:** ${markdownInline(audit.created_at || '')}`,
+                    `- **Data:** ${markdownInline(formatDate(audit.created_at))}`,
+                    `- **Autor:** ${markdownInline(userLabel(audit.author_id))}`,
+                    `- **Autor ID:** ${audit.author_id ?? 'Não informado'}`,
+                    `- **Canal:** ${markdownInline(event.via?.channel || audit.via?.channel || 'Não informado')}`,
+                    '- **Visibilidade:** internal', '',
+                    markdownInline(summary), '', '#### Dados estruturados do evento', '', fencedJson(details), '');
+            });
+        }
+
         return `${lines.join('\n').replace(/\n{4,}/g, '\n\n\n').trim()}\n`;
     }
 
@@ -920,7 +1150,9 @@
         const headers = [
             'id', 'assunto', 'status_zendesk', 'custom_status_id', 'grupo',
             'criado_em', 'atualizado_em', 'comentarios', 'url', 'query_origem',
-            'formatos_salvos', 'arquivo_pdf', 'arquivo_md', 'erro'
+            'formatos_salvos', 'arquivo_pdf', 'arquivo_md', 'inclui_eventos',
+            'auditorias', 'eventos_recebidos', 'eventos_exportados',
+            'eventos_comentarios_omitidos', 'eventos_detalhes_restritos', 'eventos_status', 'erro'
         ];
         return '\uFEFF' + [
             headers.map(csvCell).join(';'),
@@ -1016,9 +1248,9 @@
         return `ticket-list:${ticketIds.join(',')}`;
     }
 
-    function exportProfileKey(sourceKey, includePrivate) {
+    function exportProfileKey(sourceKey, includePrivate, includeEvents = false) {
         const visibility = includePrivate ? 'public-and-private' : 'public-only';
-        return `profile:${EXPORT_PROFILE_VERSION}:${visibility}:${sourceKey}`;
+        return `profile:${EXPORT_PROFILE_VERSION}:${visibility}:${includeEvents ? 'with-events' : 'no-events'}:${sourceKey}`;
     }
 
     function queryId(query) {
@@ -1120,6 +1352,7 @@
         panel.querySelector('#attus-zdexp-format').value = 'pdf';
         panel.querySelector('#attus-zdexp-concurrency').value = String(DEFAULT_CONCURRENCY);
         panel.querySelector('#attus-zdexp-private').checked = true;
+        panel.querySelector('#attus-zdexp-events').checked = true;
         panel.querySelector('#attus-zdexp-resume').checked = true;
         panel.querySelector('#attus-zdexp-status').textContent = '';
         log(`Tudo limpo: campos e ${keysToRemove.length + indexedProgressCount} progresso(s) salvo(s) foram removidos.`);
@@ -1238,6 +1471,13 @@
             criado_em: ticket.created_at || '',
             atualizado_em: ticket.updated_at || '',
             comentarios: comments.length,
+            inclui_eventos: Boolean(documentData.includeEvents),
+            auditorias: documentData.audits?.length || 0,
+            eventos_recebidos: documentData.totalEvents || 0,
+            eventos_exportados: (documentData.totalEvents || 0) - (documentData.omittedEvents || 0),
+            eventos_comentarios_omitidos: documentData.omittedEvents || 0,
+            eventos_detalhes_restritos: Boolean(documentData.includeEvents && !documentData.includePrivate),
+            eventos_status: documentData.includeEvents ? 'complete' : 'not_requested',
             url: `${BASE}/agent/tickets/${ticket.id}`,
             query_origem: query,
             formatos_salvos: existing.formatos_salvos || '',
@@ -1257,6 +1497,13 @@
             criado_em: existing.criado_em || searchTicket.created_at || '',
             atualizado_em: existing.atualizado_em || searchTicket.updated_at || '',
             comentarios: existing.comentarios ?? '',
+            inclui_eventos: existing.inclui_eventos ?? '',
+            auditorias: existing.auditorias ?? '',
+            eventos_recebidos: existing.eventos_recebidos ?? '',
+            eventos_exportados: existing.eventos_exportados ?? '',
+            eventos_comentarios_omitidos: existing.eventos_comentarios_omitidos ?? '',
+            eventos_detalhes_restritos: existing.eventos_detalhes_restritos ?? '',
+            eventos_status: existing.eventos_status || 'error',
             url: `${BASE}/agent/tickets/${searchTicket.id}`,
             query_origem: sourceLabel,
             formatos_salvos: existing.formatos_salvos || '',
@@ -1268,16 +1515,16 @@
 
     async function exportTicket(
         searchTicket, index, total, includePrivate, requestedFormats,
-        sourceLabel, progressKey, state, errorRows
+        sourceLabel, progressKey, state, errorRows, includeEvents = false
     ) {
         log(`Preparando ticket #${searchTicket.id} (${index + 1}/${total})...`);
         const ticketKey = String(searchTicket.id);
-        let row = state.records[ticketKey] || {};
+        let row = { ...(state.records[ticketKey] || {}), inclui_eventos: includeEvents };
         let createdFiles = 0;
         try {
-            const documentData = await loadTicketDocument(searchTicket, includePrivate);
+            const documentData = await loadTicketDocument(searchTicket, includePrivate, includeEvents);
             row = manifestRow(documentData, sourceLabel, row);
-            const basename = `${documentData.ticket.id}-${safeFilename(documentData.ticket.subject)}`;
+            const basename = `${documentData.ticket.id}-${safeFilename(documentData.ticket.subject)}${includeEvents ? '-com-eventos' : ''}`;
 
             for (const format of requestedFormats) {
                 if (row[`arquivo_${format}`]) continue;
@@ -1360,8 +1607,9 @@
             return;
         }
         const includePrivate = document.querySelector('#attus-zdexp-private').checked;
+        const includeEvents = document.querySelector('#attus-zdexp-events').checked;
         const sourceKey = ticketIds.length ? ticketListKey(ticketIds) : query;
-        const progressKey = exportProfileKey(sourceKey, includePrivate);
+        const progressKey = exportProfileKey(sourceKey, includePrivate, includeEvents);
         const sourceLabel = ticketIds.length
             ? `Lista direta com ${ticketIds.length} ticket(s)`
             : query;
@@ -1385,6 +1633,7 @@
             log('Validando a sessão existente do Chrome...');
             await validateSession();
             await loadCustomStatuses();
+            if (includeEvents) await loadTicketFields();
             let tickets;
             let expected = null;
             if (ticketIds.length) {
@@ -1443,6 +1692,7 @@
                 `Iniciando ${pending.length} ticket(s) em ${formatLabel}, com `
                 + `${concurrency} processo(s) simultâneo(s), na pasta "${outputDirectory.name}".`
             );
+            log(`Eventos de auditoria: ${includeEvents ? 'incluídos (uso interno)' : 'não solicitados'}.`);
 
             const errorRows = [];
             const poolResult = await runTicketPool(
@@ -1450,7 +1700,7 @@
                 concurrency,
                 (ticket, index) => exportTicket(
                     ticket, index, pending.length, includePrivate, requestedFormats,
-                    sourceLabel, progressKey, state, errorRows
+                    sourceLabel, progressKey, state, errorRows, includeEvents
                 )
             );
             await progressWriteChain.catch(() => undefined);
@@ -1505,6 +1755,8 @@
         document.querySelector('#attus-zdexp-file').disabled = isRunning;
         document.querySelector('#attus-zdexp-format').disabled = isRunning;
         document.querySelector('#attus-zdexp-concurrency').disabled = isRunning;
+        document.querySelector('#attus-zdexp-private').disabled = isRunning;
+        document.querySelector('#attus-zdexp-events').disabled = isRunning;
         document.querySelector('#attus-zdexp-cancel').disabled = !isRunning;
     }
 
@@ -1547,9 +1799,11 @@
                 </label>
             </div>
             <label class="attus-zdexp-check"><input id="attus-zdexp-private" type="checkbox" checked> Incluir notas internas</label>
+            <label class="attus-zdexp-check"><input id="attus-zdexp-events" type="checkbox" checked> Incluir eventos de auditoria (uso interno)</label>
             <label class="attus-zdexp-check"><input id="attus-zdexp-resume" type="checkbox" checked> Retomar e pular formatos já concluídos</label>
             <p id="attus-zdexp-folder">Nenhuma pasta selecionada.</p>
             <p class="attus-zdexp-note">Quando houver uma lista, ela terá prioridade. O progresso controla PDF e Markdown separadamente e respeita a inclusão de notas internas. A concorrência é pausada automaticamente ao se aproximar do limite da API.</p>
+            <p class="attus-zdexp-note">Eventos incluem mudanças de campos, status, grupos, responsáveis, regras e demais ações registradas pela API. Arquivos com eventos recebem o sufixo -com-eventos e são de uso interno. Sem notas internas, detalhes potencialmente privados são omitidos. Falhas na auditoria impedem concluir o ticket; não geram um histórico parcial como se fosse completo.</p>
             <div class="attus-zdexp-actions">
                 <button id="attus-zdexp-select-folder" type="button">Selecionar pasta</button>
                 <button id="attus-zdexp-start" class="primary" type="button">Iniciar exportação</button>
@@ -1600,7 +1854,8 @@
                 return;
             }
             const includePrivate = panel.querySelector('#attus-zdexp-private').checked;
-            const progressKey = exportProfileKey(sourceKey, includePrivate);
+            const includeEvents = panel.querySelector('#attus-zdexp-events').checked;
+            const progressKey = exportProfileKey(sourceKey, includePrivate, includeEvents);
             if (window.confirm('Apagar o progresso salvo desta extração?')) {
                 try {
                     await clearState(progressKey);
